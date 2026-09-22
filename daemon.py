@@ -143,7 +143,6 @@ def tick(cfg: dict, state: dict) -> dict:
 
     chats = data.get("chats") or []
     deny = {x.lower() for x in (cfg.get("denylist") or [])}
-    allow = {x.lower() for x in (cfg.get("allowlist") or [])}
     unmuted_unread = []
     for c in chats:
         if c.get("muted") or int(c.get("unread") or 0) <= 0:
@@ -151,8 +150,6 @@ def tick(cfg: dict, state: dict) -> dict:
         who = (c.get("who") or "").strip()
         who_l = who.lower()
         if any(d in who_l or who_l in d for d in deny if d):
-            continue
-        if allow and not any(a in who_l or who_l in a for a in allow if a):
             continue
         unmuted_unread.append(c)
 
