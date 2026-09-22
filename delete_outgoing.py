@@ -194,7 +194,13 @@ async def main(contact: str, needle: str, for_me_ok: bool, do_search: bool):
                 const n = nodes[i];
                 const t = n.innerText || '';
                 if (!t.includes(needle)) continue;
-                if (!n.querySelector('[aria-label="You:"]')) continue;
+                const _aria = [...n.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label') || '');
+                const _icons = [...n.querySelectorAll('[data-icon], svg title')].map(e => e.getAttribute('data-icon') || e.textContent || '');
+                const _out = !!(n.querySelector('[aria-label="You:"], [aria-label="You"]')
+                  || _aria.some(a => /Sent|Delivered|Read/i.test(a || ''))
+                  || n.querySelector('[data-testid="msg-dblcheck"], [data-testid="msg-check"], [data-icon="msg-dblcheck"], [data-icon="msg-check"]')
+                  || _icons.some(x => /delivered|msg-check|msg-dblcheck|wds-ic-read|wds-ic-delivered|wds-ic-sent/i.test(x)));
+                if (!_out) continue;
                 n.scrollIntoView({{block:'center'}});
                 const r = n.getBoundingClientRect();
                 const x = Math.min(r.right - 24, window.innerWidth - 24);
@@ -218,7 +224,15 @@ async def main(contact: str, needle: str, for_me_ok: bool, do_search: bool):
             f"""(() => {{
               const needle = {json.dumps(needle)};
               const n = [...document.querySelectorAll('#main [data-testid="msg-container"]')].reverse()
-                .find(n => (n.innerText||'').includes(needle) && n.querySelector('[aria-label="You:"]'));
+                .find(n => {{
+                if (!(n.innerText||'').includes(needle)) return false;
+                const _aria = [...n.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label') || '');
+                const _icons = [...n.querySelectorAll('[data-icon], svg title')].map(e => e.getAttribute('data-icon') || e.textContent || '');
+                return !!(n.querySelector('[aria-label="You:"], [aria-label="You"]')
+                  || _aria.some(a => /Sent|Delivered|Read/i.test(a || ''))
+                  || n.querySelector('[data-testid="msg-dblcheck"], [data-testid="msg-check"], [data-icon="msg-dblcheck"], [data-icon="msg-check"]')
+                  || _icons.some(x => /delivered|msg-check|msg-dblcheck|wds-ic-read|wds-ic-delivered|wds-ic-sent/i.test(x)));
+              }});
               const btn = n && (n.querySelector('[data-testid="icon-down-context"]')
                 || [...n.querySelectorAll('[aria-label]')].find(e => /open message options/i.test(e.getAttribute('aria-label')||'')));
               if (!btn) return {{found:false}};

@@ -257,26 +257,153 @@ async def main(contact: str, text: str, allow_substring: bool, do_search: bool):
         mid += 1
         await asyncio.sleep(1.1)
 
+        # Dismiss leftover forward/picker/dialog UI that hides compose
+        for _ in range(3):
+            stuck = await evaluate(
+                w,
+                mid,
+                """(() => ({
+                  dialog: !!document.querySelector('[role="dialog"], [data-testid="confirm-popup"]'),
+                  cancelFwd: !!document.querySelector('[aria-label="Cancel forward"]'),
+                  compose: !!document.querySelector('#main footer div[contenteditable="true"]')
+                }))()""",
+            )
+            mid += 1
+            if stuck and stuck.get("compose") and not stuck.get("dialog") and not stuck.get("cancelFwd"):
+                break
+            for typ in ("keyDown", "keyUp"):
+                await call(
+                    w,
+                    mid,
+                    "Input.dispatchKeyEvent",
+                    {
+                        "type": typ,
+                        "key": "Escape",
+                        "code": "Escape",
+                        "windowsVirtualKeyCode": 27,
+                        "nativeVirtualKeyCode": 27,
+                    },
+                )
+                mid += 1
+            await asyncio.sleep(0.2)
+
         mid, h = await header_ok(w, mid, contact)
         if not h or not h.get("ok"):
             die(f"refusing send; header does not match contact={contact!r} state={h}")
 
-        compose_ok = await evaluate(
+        # Hard-clear compose: leftover draft must not glue onto insertText.
+        # Substring draft checks are insufficient (prefix leftovers still pass).
+        prior = await evaluate(
             w,
             mid,
             """(() => {
               const c = document.querySelector('#main footer div[contenteditable="true"][data-tab="10"]')
                 || document.querySelector('#main footer div[contenteditable="true"]');
-              if (!c) return false;
-              c.focus();
-              document.execCommand('selectAll');
-              document.execCommand('delete');
-              return true;
+              if (!c) return {ok:false, prior:''};
+              return {ok:true, prior:(c.innerText||'').trim()};
             })()""",
         )
         mid += 1
-        if not compose_ok:
+        if not prior or not prior.get("ok"):
             die("no compose box")
+        leftover = (prior.get("prior") or "").strip()
+        if leftover:
+            print(
+                json.dumps(
+                    {"info": "cleared_leftover_compose", "chars": len(leftover)},
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+
+        cleared = False
+        for _attempt in range(6):
+            st = await evaluate(
+                w,
+                mid,
+                """(() => {
+                  const c = document.querySelector('#main footer div[contenteditable="true"][data-tab="10"]')
+                    || document.querySelector('#main footer div[contenteditable="true"]');
+                  if (!c) return {ok:false, empty:false, text:''};
+                  c.focus();
+                  try {
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(c);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                  } catch (e) {}
+                  document.execCommand('selectAll');
+                  document.execCommand('delete');
+                  // also wipe textContent if still sticky
+                  const t = (c.innerText || '').trim();
+                  if (t) {
+                    c.textContent = '';
+                    c.dispatchEvent(new InputEvent('input', {bubbles:true}));
+                  }
+                  const after = (c.innerText || '').trim();
+                  return {ok:true, empty:!after, text: after.slice(0, 80)};
+                })()""",
+            )
+            mid += 1
+            if st and st.get("ok") and st.get("empty"):
+                cleared = True
+                break
+            # Ctrl+A / Backspace via Input as fallback
+            await call(
+                w,
+                mid,
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyDown",
+                    "key": "a",
+                    "code": "KeyA",
+                    "windowsVirtualKeyCode": 65,
+                    "modifiers": 2,
+                },
+            )
+            mid += 1
+            await call(
+                w,
+                mid,
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyUp",
+                    "key": "a",
+                    "code": "KeyA",
+                    "windowsVirtualKeyCode": 65,
+                    "modifiers": 2,
+                },
+            )
+            mid += 1
+            await call(
+                w,
+                mid,
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyDown",
+                    "key": "Backspace",
+                    "code": "Backspace",
+                    "windowsVirtualKeyCode": 8,
+                },
+            )
+            mid += 1
+            await call(
+                w,
+                mid,
+                "Input.dispatchKeyEvent",
+                {
+                    "type": "keyUp",
+                    "key": "Backspace",
+                    "code": "Backspace",
+                    "windowsVirtualKeyCode": 8,
+                },
+            )
+            mid += 1
+            await asyncio.sleep(0.08)
+
+        if not cleared:
+            die(f"could not empty compose before insert: {st}")
 
         await call(w, mid, "Input.insertText", {"text": text})
         mid += 1
@@ -292,8 +419,8 @@ async def main(contact: str, text: str, allow_substring: bool, do_search: bool):
         )
         mid += 1
         norm = lambda s: " ".join((s or "").replace("\n", " ").split())
-        if norm(text) not in norm(draft) and text.strip() not in (draft or ""):
-            die(f"compose draft mismatch before send: {draft!r}")
+        if norm(draft) != norm(text):
+            die(f"compose draft not exact match before send: draft={draft!r} want={text!r}")
 
         for typ in ("keyDown", "keyUp"):
             await call(

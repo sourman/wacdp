@@ -12,6 +12,10 @@ Scripts talk to an already-logged-in Chromium (e.g. inoculum on `WA_CDP_HTTP`, d
 | `scrape_chat_list.py` | List chats / unread / muted (list pane only) |
 | `open_chat.py` | Open a chat by title |
 | `delete_outgoing.py` | Delete outgoing message (prefer for everyone) |
+| `edit_outgoing.py` | Edit outgoing message (exact draft check) |
+| `reply_to_message.py` | Reply quoting a bubble |
+| `forward_message.py` | Forward a bubble to another chat |
+| `react_to_message.py` | React with emoji |
 | `wa_cdp.py` | Shared CDP primitives |
 | `daemon.py` + `ensure.sh` / `supervise.sh` | Unread poll → webhook |
 

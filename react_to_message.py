@@ -294,7 +294,22 @@ async def find_bubble(w, mid, needle: str):
             const n = nodes[i];
             const t = (n.innerText || '').replace(/\\s+/g, ' ').trim();
             if (!t.includes(needle)) continue;
-            const incoming = !n.querySelector('[aria-label="You:"]');
+            const ariaLabs = [...n.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label') || '');
+            const icons = [...n.querySelectorAll('[data-icon], svg title')].map(e => e.getAttribute('data-icon') || e.textContent || '');
+            const outgoing = !!(
+              n.querySelector('[aria-label="You:"], [aria-label="You"]')
+              || ariaLabs.some(a => /Sent|Delivered|Read/i.test(a || ''))
+              || n.querySelector('[data-testid="msg-dblcheck"], [data-testid="msg-check"], [data-icon="msg-dblcheck"], [data-icon="msg-check"]')
+              || icons.some(x => /delivered|msg-check|msg-dblcheck|wds-ic-read|wds-ic-delivered|wds-ic-sent/i.test(x))
+            );
+            const incoming = !outgoing;
+            const quote = n.querySelector('[data-testid="quoted-message"]');
+            const primaryText = [...n.querySelectorAll('[data-testid="selectable-text"]')]
+              .filter(e => !quote || !quote.contains(e))
+              .map(e => e.innerText || '').join(' ');
+            const primary = primaryText ? primaryText.includes(needle)
+              : (quote ? (n.innerText || '').replace(quote.innerText || '', '').includes(needle)
+                       : t.includes(needle));
             n.scrollIntoView({{block: 'center'}});
             const r = n.getBoundingClientRect();
             const parent = n.closest('.focusable-list-item') || n.parentElement;
@@ -304,7 +319,7 @@ async def find_bubble(w, mid, needle: str):
               ? [...parent.querySelectorAll('img[alt]')].map(e => e.getAttribute('alt') || '')
               : [];
             hits.push({{
-              incoming,
+              incoming, outgoing, primary,
               text: t.slice(0, 160),
               x: r.x + r.width / 2,
               y: r.y + Math.min(r.height / 2, 28),
@@ -315,7 +330,7 @@ async def find_bubble(w, mid, needle: str):
             }});
           }}
           if (!hits.length) return {{found: false}};
-          hits.sort((a, b) => (b.incoming ? 1 : 0) - (a.incoming ? 1 : 0));
+          hits.sort((a, b) => ((b.primary?2:0)+(b.incoming?1:0)) - ((a.primary?2:0)+(a.incoming?1:0)));
           return {{found: true, ...hits[0], candidates: hits.length}};
         }})()""",
     )
@@ -327,13 +342,23 @@ async def locate_react_btn(w, mid, needle: str):
         mid,
         f"""(() => {{
           const needle = {json.dumps(needle)};
-          const n = [...document.querySelectorAll('#main [data-testid="msg-container"]')]
-            .reverse().find(n => (n.innerText || '').includes(needle));
+          const primaryHas = (el) => {{
+            const quote = el.querySelector('[data-testid="quoted-message"]');
+            const texts = [...el.querySelectorAll('[data-testid="selectable-text"]')]
+              .filter(e => !quote || !quote.contains(e))
+              .map(e => e.innerText || '').join(' ');
+            if (texts) return texts.includes(needle);
+            if (quote) return (el.innerText || '').replace(quote.innerText || '', '').includes(needle);
+            return (el.innerText || '').includes(needle);
+          }};
+          const nodes = [...document.querySelectorAll('#main [data-testid="msg-container"]')].reverse();
+          const n = nodes.find(el => primaryHas(el)) || nodes.find(el => (el.innerText || '').includes(needle));
           if (!n) return {{found: false, reason: 'no bubble'}};
-          const btn = n.querySelector('[data-testid="reaction-entry-point"]')
-            || [...n.querySelectorAll('[aria-label]')].find(e => /^React$/i.test(e.getAttribute('aria-label') || ''));
+          const root = n.closest('.focusable-list-item') || n.parentElement || n;
+          const btn = root.querySelector('[data-testid="reaction-entry-point"]')
+            || [...root.querySelectorAll('[aria-label]')].find(e => /^React$/i.test(e.getAttribute('aria-label') || ''));
           if (!btn) {{
-            const aria = [...n.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label'));
+            const aria = [...root.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label'));
             return {{found: false, reason: 'no react btn', aria}};
           }}
           const r = btn.getBoundingClientRect();
@@ -503,14 +528,14 @@ async def main(contact: str, needle: str, emoji: str, do_search: bool):
         # Hover bubble to reveal React affordance
         await mouse_move(w, mid, bubble["x"], bubble["y"])
         mid += 1
-        await asyncio.sleep(0.55)
+        await asyncio.sleep(0.85)
 
         mid, react = await locate_react_btn(w, mid, needle)
         if not react or not react.get("found"):
             # re-hover slightly and retry once
             await mouse_move(w, mid, bubble["x"] + 8, bubble["y"])
             mid += 1
-            await asyncio.sleep(0.55)
+            await asyncio.sleep(0.85)
             mid, react = await locate_react_btn(w, mid, needle)
         if not react or not react.get("found"):
             die(f"React affordance not found: {react}")

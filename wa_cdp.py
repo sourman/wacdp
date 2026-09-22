@@ -109,6 +109,40 @@ def wa_ws_url():
     return pages[0]["webSocketDebuggerUrl"]
 
 
+
+# JS snippets inlined by verb helpers (WhatsApp DOM drifts; You: aria often missing).
+JS_IS_OUTGOING = r"""
+  (n) => {
+    if (!n) return false;
+    if (n.querySelector('[aria-label="You:"], [aria-label="You"]')) return true;
+    const aria = [...n.querySelectorAll('[aria-label]')].map(e => e.getAttribute('aria-label') || '');
+    if (aria.some(a => /Sent|Delivered|Read/i.test(a || ''))) return true;
+    if (n.querySelector('[data-testid="msg-dblcheck"], [data-testid="msg-check"], [data-icon="msg-dblcheck"], [data-icon="msg-check"]')) return true;
+    const icons = [...n.querySelectorAll('[data-icon], svg title')].map(e => e.getAttribute('data-icon') || e.textContent || '');
+    if (icons.some(t => /delivered|msg-check|msg-dblcheck|wds-ic-read|wds-ic-delivered|wds-ic-sent/i.test(t))) return true;
+    return false;
+  }
+"""
+
+JS_PRIMARY_HAS_NEEDLE = r"""
+  (n, needle) => {
+    if (!n || !needle) return false;
+    const quote = n.querySelector('[data-testid="quoted-message"]');
+    const texts = [...n.querySelectorAll('[data-testid="selectable-text"]')]
+      .filter(e => !quote || !quote.contains(e))
+      .map(e => e.innerText || '')
+      .join(' ');
+    if (texts) return texts.includes(needle);
+    if (quote) {
+      const qt = quote.innerText || '';
+      const without = (n.innerText || '').replace(qt, '');
+      return without.includes(needle);
+    }
+    return (n.innerText || '').includes(needle);
+  }
+"""
+
+
 def digits_only(s: str) -> str:
     return "".join(c for c in (s or "") if c.isdigit())
 
