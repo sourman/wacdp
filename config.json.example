@@ -1,4 +1,5 @@
 {
   "webhook_url": "https://api2.cursor.sh/automations/webhook/PASTE_ID",
-  "webhook_key": "PASTE_FROM_SECRET_NOT_CHAT"
+  "webhook_key": "PASTE_FROM_SECRET_NOT_CHAT",
+  "denylist": ["Famillia", "Aquabros"]
 }
