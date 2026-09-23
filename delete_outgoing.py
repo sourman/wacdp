@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delete an outgoing WhatsApp Web message via Gate inoculum CDP.
+"""Delete an outgoing WhatsApp Web message via Gate box-chrome CDP.
 
 Usage:
   WA_CDP_HTTP=http://127.0.0.1:9427 python3 delete_outgoing.py \\

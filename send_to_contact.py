@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reliable WhatsApp Web send via Gate inoculum CDP.
+"""Reliable WhatsApp Web send via Gate box-chrome CDP.
 
 Usage:
   WA_CDP_HTTP=http://127.0.0.1:9427 python3 send_to_contact.py --contact 'Name' --text '...'

@@ -2,13 +2,14 @@
 
 WhatsApp Web helpers over the Chrome DevTools Protocol (CDP).
 
-Scripts talk to an already-logged-in Chromium (e.g. inoculum on `WA_CDP_HTTP`, default `http://127.0.0.1:9427`).
+Scripts talk to an already-logged-in Chromium (e.g. box-chrome on `WA_CDP_HTTP`, default `http://127.0.0.1:9427`).
 
 ## Helpers
 
 | Script | Job |
 |---|---|
 | `send_to_contact.py` | Send text (exact title or phone / non-contact) |
+| `send_media_to_contact.py` | Send photo(s) via Attach → Photos & videos (not stickers) |
 | `scrape_chat_list.py` | List chats / unread / muted (list pane only) |
 | `open_chat.py` | Open a chat by title |
 | `delete_outgoing.py` | Delete outgoing message (prefer for everyone) |

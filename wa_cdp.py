@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared WhatsApp Web CDP helpers for Gate inoculum."""
+"""Shared WhatsApp Web CDP helpers for Gate box-chrome."""
 from __future__ import annotations
 
 import asyncio
