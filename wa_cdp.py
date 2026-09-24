@@ -1,15 +1,55 @@
 #!/usr/bin/env python3
-"""Shared WhatsApp Web CDP helpers for Gate box-chrome."""
+"""Shared WhatsApp Web CDP helpers for box-chrome (Gate)."""
 from __future__ import annotations
 
 import asyncio
 import json
 import os
 import urllib.request
+from pathlib import Path
 
 import websockets
 
-CDP = os.environ.get("WA_CDP_HTTP", "http://127.0.0.1:9427")
+_DIR = Path(__file__).resolve().parent
+
+
+def resolve_cdp_http() -> str:
+    """Resolve CDP HTTP base URL.
+
+    Order: (1) env WA_CDP_HTTP (2) config.json cdp_http (3) DISPLAY -> 9222+N.
+    Daemon has no agent DISPLAY, so it must set cdp_http in config.json.
+    """
+    env = (os.environ.get("WA_CDP_HTTP") or "").strip()
+    if env:
+        return env.rstrip("/")
+    cfg_path = _DIR / "config.json"
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            cdp = (cfg.get("cdp_http") or "").strip()
+            if cdp:
+                return cdp.rstrip("/")
+        except Exception:
+            pass
+    display = os.environ.get("DISPLAY") or ""
+    # :3 or :3.0 -> port 9222+3 = 9225
+    if display.startswith(":"):
+        try:
+            num = int(display[1:].split(".", 1)[0])
+            return f"http://127.0.0.1:{9222 + num}"
+        except ValueError:
+            pass
+    raise RuntimeError(
+        "WA_CDP_HTTP unset: set env WA_CDP_HTTP, config.json cdp_http, "
+        "or DISPLAY (port = 9222 + DISPLAY_NUM)"
+    )
+
+
+# Lazy module-level for callers that still read wa_cdp.CDP
+try:
+    CDP = resolve_cdp_http()
+except RuntimeError:
+    CDP = ""
 
 
 async def call(w, mid, method, params=None):
@@ -93,7 +133,8 @@ async def key(w, mid, name, code, vk):
 
 
 def wa_ws_url():
-    tabs = json.load(urllib.request.urlopen(f"{CDP}/json/list", timeout=5))
+    cdp = resolve_cdp_http()
+    tabs = json.load(urllib.request.urlopen(f"{cdp}/json/list", timeout=5))
     pages = [
         t
         for t in tabs
@@ -202,7 +243,8 @@ async def clear_search(w, mid):
             mid,
             """(() => {
               const el = document.querySelector('input[aria-label="Search or start a new chat"]')
-                || [...document.querySelectorAll('input')].find(i => /search/i.test(i.getAttribute('aria-label')||''));
+                || [...document.querySelectorAll('input')].find(i => /search/i.test(i.getAttribute('aria-label')||''))
+                || document.querySelector('#side input[role="textbox"]');
               const val = el ? (el.value || '') : '';
               const n = document.querySelectorAll('#pane-side span[title]').length;
               if (el && val) {
@@ -213,7 +255,7 @@ async def clear_search(w, mid):
               const back = [...document.querySelectorAll('[aria-label], [data-icon], [data-testid]')]
                 .map(e => {
                   const blob = ((e.getAttribute('aria-label')||'') + ' ' + (e.getAttribute('data-icon')||'') + ' ' + (e.getAttribute('data-testid')||'')).toLowerCase();
-                  if (!/cancel search|back-refreshed|x-viewer|(^| )back($| )/.test(blob)) return null;
+                  if (!/cancel search|end icon button|back-refreshed|x-viewer|(^| )back($| )/.test(blob)) return null;
                   const r = e.getBoundingClientRect();
                   if (r.width < 8 || r.height < 8 || r.y > 120) return null;
                   return {x: r.x + r.width / 2, y: r.y + r.height / 2, blob};
@@ -331,7 +373,9 @@ async def find_search_input(w, mid):
             || [...document.querySelectorAll('input')].find(i =>
                  /Search or start a new chat/i.test(i.getAttribute('aria-label') || '')
                  || /search/i.test((i.getAttribute('aria-label')||'') + (i.getAttribute('placeholder')||''))
-               );
+               )
+            || document.querySelector('#side input[role="textbox"]')
+            || document.querySelector('#side input[type="text"]');
           if (!el) {
             return {
               found: false,

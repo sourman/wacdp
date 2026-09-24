@@ -2,7 +2,7 @@
 
 WhatsApp Web helpers over the Chrome DevTools Protocol (CDP).
 
-Scripts talk to an already-logged-in Chromium (e.g. box-chrome on `WA_CDP_HTTP`, default `http://127.0.0.1:9427`).
+Scripts talk to an already-logged-in Chromium (URL from `WA_CDP_HTTP`, else `cdp_http` in `config.json`, else `DISPLAY` :N maps to port 9222+N).
 
 ## Helpers
 
@@ -14,6 +14,7 @@ Scripts talk to an already-logged-in Chromium (e.g. box-chrome on `WA_CDP_HTTP`,
 | `open_chat.py` | Open a chat by title |
 | `delete_outgoing.py` | Delete outgoing message (prefer for everyone) |
 | `delete_chat.py` | Delete entire chat / nuke conversation |
+| `archive_chat.py` | Archive / unarchive / check a chat via search (never opens it, verifies state) |
 | `edit_outgoing.py` | Edit outgoing message (exact draft check) |
 | `reply_to_message.py` | Reply quoting a bubble |
 | `forward_message.py` | Forward a bubble to another chat |
