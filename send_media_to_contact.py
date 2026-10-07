@@ -34,6 +34,36 @@ from wa_cdp import (
 
 CDP = resolve_cdp_http()
 
+DIR = Path(__file__).resolve().parent
+GATE_SENT = DIR / "gate_sent.json"
+
+
+def stamp_gate_sent(contact: str, preview: str, resolved_title: str | None = None) -> None:
+    """Record Gate-originated send so daemon skips outbound webhook for ~120s."""
+    key = (resolved_title or contact or "").strip()
+    if not key:
+        return
+    prev = (preview or "")[:80]
+    now = time.time()
+    try:
+        data = {}
+        if GATE_SENT.exists():
+            try:
+                data = json.loads(GATE_SENT.read_text(encoding="utf-8")) or {}
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[key] = {"preview": prev, "until": now + 120}
+        ckey = (contact or "").strip()
+        if ckey and ckey != key:
+            data[ckey] = {"preview": prev, "until": now + 120}
+        GATE_SENT.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except Exception:
+        pass
+
 
 def die(msg, code: int = 1, **extra):
     out = {"ok": False, "error": msg, **extra}
@@ -547,7 +577,16 @@ async def set_files_via_chooser(s: CdpSession, paths: list[str], timeout: float 
 async def insert_caption(s: CdpSession, caption: str, composer: dict):
     if not caption:
         return
-    boxes = composer.get("boxes") or []
+    # Wait for the media caption box to render; never type into the chat footer compose.
+    boxes = []
+    for _ in range(25):
+        boxes = [b for b in ((composer or {}).get("boxes") or []) if not b.get("inFooter")]
+        if boxes:
+            break
+        await asyncio.sleep(0.2)
+        composer = await media_composer_state(s)
+    if not boxes:
+        die("no_caption_box", state=composer)
     # Prefer non-footer caption / "Type a message" / Add a caption aria
     box = None
     for b in boxes:
@@ -612,7 +651,7 @@ async def insert_caption(s: CdpSession, caption: str, composer: dict):
             const a = (e.getAttribute('aria-label')||'');
             return /Type a message/i.test(a) && !e.closest('#main footer');
           });
-          if (!el) el = document.activeElement;
+          if (!el) el = els.find(e => !e.closest('footer'));
           return (el && (el.innerText||'')).trim();
         })()"""
     )
@@ -823,6 +862,8 @@ async def main_async(contact: str, files: list[str], caption: str | None, allow_
                 },
                 "elapsed_ms": elapsed_ms,
             }
+            _preview = (caption or "").strip() or ((ver.get("hit") or {}).get("t") or "") or "[photo]"
+            stamp_gate_sent(contact, _preview, title)
             print(json.dumps(out, ensure_ascii=False))
         finally:
             await s.close()
