@@ -58,14 +58,30 @@ SCRAPE_JS = r"""
 """
 
 
+# Transport budget. A busy box can stall Chrome's DevTools endpoint for a few
+# seconds; one stall used to fail the whole scrape (and any routine using it).
+# Retry transport failures inside one overall budget that stays below the
+# daemon's 45 s subprocess timeout. Page-level results (qr_login, no_chat_list,
+# cdp errors) are returned at once and never retried.
+SCRAPE_BUDGET_S = float(os.environ.get("WA_SCRAPE_BUDGET", "38"))
+SCRAPE_ATTEMPTS = max(1, int(os.environ.get("WA_SCRAPE_ATTEMPTS", "3")))
+ATTEMPT_TIMEOUT_S = 15.0
+LIST_TIMEOUT_S = 8.0
+OPEN_TIMEOUT_S = 10.0
+
+
+def _list_tabs():
+    return json.load(urllib.request.urlopen(f"{CDP_HTTP}/json/list", timeout=LIST_TIMEOUT_S))
+
+
 async def eval_on_wa(expression: str):
-    tabs = json.load(urllib.request.urlopen(f"{CDP_HTTP}/json/list", timeout=5))
+    tabs = await asyncio.to_thread(_list_tabs)
     pages = [t for t in tabs if t.get("type") == "page"]
     pages.sort(key=lambda t: (0 if "whatsapp" in (t.get("url") or "").lower() else 1))
     if not pages:
         return {"error": "no_pages"}
     ws_url = pages[0]["webSocketDebuggerUrl"]
-    async with websockets.connect(ws_url, max_size=None) as w:
+    async with websockets.connect(ws_url, max_size=None, open_timeout=OPEN_TIMEOUT_S) as w:
         await w.send(
             json.dumps(
                 {
@@ -76,7 +92,7 @@ async def eval_on_wa(expression: str):
             )
         )
         while True:
-            raw = json.loads(await asyncio.wait_for(w.recv(), timeout=30))
+            raw = json.loads(await w.recv())
             if raw.get("id") == 1:
                 if "error" in raw:
                     return {"error": "cdp", "detail": raw["error"]}
@@ -88,11 +104,37 @@ async def eval_on_wa(expression: str):
                 return {"error": "bad_eval", "detail": res}
 
 
+def _describe(e: BaseException) -> str:
+    msg = str(e)
+    return f"{type(e).__name__}: {msg}" if msg else type(e).__name__
+
+
+async def eval_with_retry(expression: str):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SCRAPE_BUDGET_S
+    errors = []
+    for attempt in range(1, SCRAPE_ATTEMPTS + 1):
+        remaining = deadline - loop.time()
+        if remaining < 2:
+            break
+        try:
+            return await asyncio.wait_for(eval_on_wa(expression), timeout=min(ATTEMPT_TIMEOUT_S, remaining))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # transport: timeouts, refused, closed socket, HTTP hiccup
+            errors.append(f"try {attempt}: {_describe(e)}")
+            if attempt < SCRAPE_ATTEMPTS:
+                pause = min(1.5 * attempt, max(0.0, deadline - loop.time() - 2))
+                if pause > 0:
+                    await asyncio.sleep(pause)
+    raise RuntimeError("; ".join(errors) or "scrape budget exhausted")
+
+
 def main():
     try:
-        data = asyncio.run(eval_on_wa(SCRAPE_JS))
+        data = asyncio.run(eval_with_retry(SCRAPE_JS))
     except Exception as e:
-        print(json.dumps({"error": "exception", "detail": str(e)}))
+        print(json.dumps({"error": "exception", "detail": str(e) or type(e).__name__}))
         sys.exit(2)
     print(json.dumps(data, ensure_ascii=False))
     if isinstance(data, dict) and data.get("error"):
