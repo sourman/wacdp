@@ -130,12 +130,24 @@ async def eval_with_retry(expression: str):
     raise RuntimeError("; ".join(errors) or "scrape budget exhausted")
 
 
+def _scrub(o):
+    """Replace lone UTF-16 surrogates (e.g. emoji cut mid-pair in a truncated preview)."""
+    if isinstance(o, str):
+        return o.encode("utf-8", "surrogatepass").decode("utf-8", "replace") if any(0xD800 <= ord(c) <= 0xDFFF for c in o) else o
+    if isinstance(o, list):
+        return [_scrub(x) for x in o]
+    if isinstance(o, dict):
+        return {_scrub(k): _scrub(v) for k, v in o.items()}
+    return o
+
+
 def main():
     try:
         data = asyncio.run(eval_with_retry(SCRAPE_JS))
     except Exception as e:
         print(json.dumps({"error": "exception", "detail": str(e) or type(e).__name__}))
         sys.exit(2)
+    data = _scrub(data)
     print(json.dumps(data, ensure_ascii=False))
     if isinstance(data, dict) and data.get("error"):
         sys.exit(1)
