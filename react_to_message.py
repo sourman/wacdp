@@ -154,7 +154,7 @@ async def open_via_search(w, mid, contact: str):
     if not loc:
         die("contact not in list and no search input")
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.2)
     dig = digits_only(contact)
     query = dig if looks_like_phone(contact) and dig else contact.strip()
@@ -258,7 +258,7 @@ async def ensure_chat_open(w, mid, contact: str, do_search: bool):
         die(f"title mismatch {loc.get('title')!r} != {contact!r}")
 
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.35)
     await evaluate(
         w,
@@ -541,7 +541,7 @@ async def main(contact: str, needle: str, emoji: str, do_search: bool):
             die(f"React affordance not found: {react}")
 
         await mouse(w, mid, react["x"], react["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.55)
 
         mid, emo = await locate_emoji(w, mid, emoji, bubble["top"], bubble["bottom"])
@@ -557,7 +557,7 @@ async def main(contact: str, needle: str, emoji: str, do_search: bool):
         mid += 1
         await asyncio.sleep(0.12)
         await mouse(w, mid, emo["x"], emo["y"])
-        mid += 3
+        mid += 4
 
         deadline = time.time() + 8
         last = None

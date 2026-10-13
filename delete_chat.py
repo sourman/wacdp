@@ -104,7 +104,7 @@ async def open_header_menu(w, mid):
     if not loc or not loc.get("found"):
         raise RuntimeError(f"header Menu button missing: {loc}")
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.45)
     return mid, loc
 
@@ -287,7 +287,7 @@ async def main(contact: str, allow_substring: bool, allow_group: bool, dry_run: 
 
             hit = item["hit"]
             await mouse(w, mid, hit["x"], hit["y"])
-            mid += 3
+            mid += 4
 
             confirm = None
             for _ in range(20):
@@ -324,7 +324,7 @@ async def main(contact: str, allow_substring: bool, allow_group: bool, dry_run: 
 
             del_btn = confirm["del"]
             await mouse(w, mid, del_btn["x"], del_btn["y"])
-            mid += 3
+            mid += 4
             await asyncio.sleep(1.0)
 
             # Leave UI healthy, then verify list

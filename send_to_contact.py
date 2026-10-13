@@ -28,6 +28,24 @@ import websockets
 
 CDP = os.environ.get("WA_CDP_HTTP", "http://127.0.0.1:9427")
 
+# Synthetic click fallback: some CDP setups (notably headless Chromium) silently
+# drop Input.dispatchMouseEvent. When enabled, click() also dispatches synthetic
+# JS mouse events on the element under the cursor. Default OFF: on a healthy
+# browser both would land and double-fire clicks. Enable with
+# WACDP_SYNTHETIC_CLICKS=1, or by dropping an (untracked) `.synthetic_clicks`
+# marker file next to this module; the env var wins when set.
+def _synthetic_clicks_enabled() -> bool:
+    env = os.environ.get("WACDP_SYNTHETIC_CLICKS", "").strip().lower()
+    if env in ("1", "true", "yes"):
+        return True
+    if env in ("0", "false", "no"):
+        return False
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.exists(os.path.join(here, ".synthetic_clicks"))
+
+
+SYNTHETIC_CLICKS = _synthetic_clicks_enabled()
+
 
 def digits_only(s: str) -> str:
     return "".join(c for c in (s or "") if c.isdigit())
@@ -81,6 +99,29 @@ async def click(w, mid0, x, y, button="left"):
         if typ != "mouseMoved":
             params.update(button=button, clickCount=1)
         await call(w, mid0 + i, "Input.dispatchMouseEvent", params)
+    if SYNTHETIC_CLICKS:
+        # JS fallback for setups where CDP input events don't land.
+        # Dispatch synthetic events on the element at the point.
+        btn_num = 2 if button == "right" else 0
+        await evaluate(
+            w,
+            mid0 + 3,
+            f"""(() => {{
+              const el = document.elementFromPoint({x}, {y});
+              if (!el) return false;
+              const o = {{bubbles: true, cancelable: true, clientX: {x}, clientY: {y}, button: {btn_num}}};
+              el.dispatchEvent(new MouseEvent('mouseover', o));
+              el.dispatchEvent(new MouseEvent('mousedown', o));
+              el.dispatchEvent(new MouseEvent('mouseup', o));
+              if ({json.dumps(button)} === 'right') {{
+                el.dispatchEvent(new MouseEvent('contextmenu', o));
+              }} else {{
+                el.dispatchEvent(new MouseEvent('click', o));
+                try {{ el.click(); }} catch (e) {{}}
+              }}
+              return true;
+            }})()""",
+        )
 
 
 def die(msg: str, code: int = 1):
@@ -143,7 +184,7 @@ async def open_via_search(w, mid, contact: str):
     if not loc:
         die("contact not in list and no search input (non-contact open needs search)")
     await click(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.2)
     # clear then type digits-prefer query
     q = contact.strip()
@@ -238,7 +279,7 @@ async def main(contact: str, text: str, allow_substring: bool, do_search: bool):
             die(f"title mismatch {loc.get('title')!r} != {contact!r}")
 
         await click(w, mid, loc["x"], loc["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.35)
         # JS reinforce click on cell-frame
         await evaluate(

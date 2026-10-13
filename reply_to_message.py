@@ -154,7 +154,7 @@ async def open_via_search(w, mid, contact: str):
     if not loc:
         die("contact not in list and no search input")
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.2)
     dig = digits_only(contact)
     query = dig if looks_like_phone(contact) and dig else contact.strip()
@@ -258,7 +258,7 @@ async def ensure_chat_open(w, mid, contact: str, do_search: bool):
         die(f"title mismatch {loc.get('title')!r} != {contact!r}")
 
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.35)
     await evaluate(
         w,
@@ -490,7 +490,7 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
             die(f"Reply affordance not found: {aff}")
 
         await mouse(w, mid, aff["x"], aff["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.5)
 
         if aff.get("kind") != "direct-reply":
@@ -503,13 +503,13 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
                 mid, aff2 = await locate_reply_affordance(w, mid, needle)
                 if aff2 and aff2.get("found"):
                     await mouse(w, mid, aff2["x"], aff2["y"])
-                    mid += 3
+                    mid += 4
                     await asyncio.sleep(0.5)
                 mid, menuitem = await locate_reply_menuitem(w, mid)
             if not menuitem or not menuitem.get("found"):
                 die(f"Reply menu item missing: {menuitem}")
             await mouse(w, mid, menuitem["x"], menuitem["y"])
-            mid += 3
+            mid += 4
             await asyncio.sleep(0.55)
 
         mid, bar = await reply_bar_active(w, mid, needle)

@@ -282,7 +282,7 @@ async def open_via_search(w, mid, contact: str):
     if not loc:
         die("contact not in list and no search input")
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.2)
     dig = digits_only(contact)
     query = dig if looks_like_phone(contact) and dig else contact.strip()
@@ -441,7 +441,7 @@ async def ensure_chat_open(w, mid, contact: str, do_search: bool, alias: str | N
         die(f"title mismatch {loc.get('title')!r} != {contact!r}")
 
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.35)
     await evaluate(
         w,
@@ -686,7 +686,7 @@ async def search_forward_dest(w, mid, contact: str):
     if not loc:
         die("forward picker search input missing")
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.15)
     dig = digits_only(contact)
     query = dig if looks_like_phone(contact) and dig else contact.strip()
@@ -737,7 +737,7 @@ async def select_forward_dest(w, mid, contact: str):
     if not hit or not hit.get("found"):
         die(f"to-contact not found in forward picker: {hit}")
     await mouse(w, mid, hit["x"], hit["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.45)
     return mid, hit
 
@@ -779,7 +779,7 @@ async def dismiss_forward_ui(w, mid):
     mid += 1
     if cancel:
         await mouse(w, mid, cancel["x"], cancel["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.3)
     for typ in ("keyDown", "keyUp"):
         await call(
@@ -914,7 +914,7 @@ async def main(from_contact: str, needle: str, to_contact: str, do_search: bool)
             die(f"message options not found: {aff}")
 
         await mouse(w, mid, aff["x"], aff["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.5)
 
         mid, menuitem = await locate_forward_menuitem(w, mid)
@@ -925,14 +925,14 @@ async def main(from_contact: str, needle: str, to_contact: str, do_search: bool)
             mid, aff2 = await locate_options_btn(w, mid, needle)
             if aff2 and aff2.get("found"):
                 await mouse(w, mid, aff2["x"], aff2["y"])
-                mid += 3
+                mid += 4
                 await asyncio.sleep(0.5)
             mid, menuitem = await locate_forward_menuitem(w, mid)
         if not menuitem or not menuitem.get("found"):
             die(f"Forward menu item missing: {menuitem}")
 
         await mouse(w, mid, menuitem["x"], menuitem["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.55)
 
         mid, bar = await locate_forward_bar_btn(w, mid)
@@ -947,7 +947,7 @@ async def main(from_contact: str, needle: str, to_contact: str, do_search: bool)
                 die(f"Forward bar / picker not active: bar={bar} picker={picker}")
         else:
             await mouse(w, mid, bar["x"], bar["y"])
-            mid += 3
+            mid += 4
             await asyncio.sleep(1.0)
             mid, picker = await forward_picker_open(w, mid)
             if not picker or not picker.get("ok"):
@@ -969,7 +969,7 @@ async def main(from_contact: str, needle: str, to_contact: str, do_search: bool)
             die(f"Send button missing after selecting dest: {send}")
 
         await mouse(w, mid, send["x"], send["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(1.8)
 
         dest_alias = None

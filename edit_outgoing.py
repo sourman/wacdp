@@ -252,7 +252,7 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
                 if not sloc:
                     die("not in list and no search")
                 await mouse(w, mid, sloc["x"], sloc["y"])
-                mid += 3
+                mid += 4
                 q = digits_only(contact) or contact
                 await call(w, mid, "Input.insertText", {"text": q})
                 mid += 1
@@ -279,7 +279,7 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
                 if not loc or not loc.get("found"):
                     die(f"contact not found after search: {loc}")
             await mouse(w, mid, loc["x"], loc["y"])
-            mid += 3
+            mid += 4
             await asyncio.sleep(1.1)
 
         # Header verify
@@ -370,10 +370,10 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
         mid += 1
         if opts and opts.get("found"):
             await mouse(w, mid, opts["x"], opts["y"])
-            mid += 3
+            mid += 4
         else:
             await mouse(w, mid, bubble["x"], bubble["y"], button="right")
-            mid += 3
+            mid += 4
         await asyncio.sleep(0.4)
 
         edit_item = await evaluate(
@@ -392,7 +392,7 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
         if not edit_item or not edit_item.get("found"):
             die(f"Edit menu missing: {edit_item}")
         await mouse(w, mid, edit_item["x"], edit_item["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.55)
 
         # Edit field: prefer in-message / dialog contenteditable; fall back to footer compose
@@ -479,7 +479,7 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
         mid += 1
         if save_btn and save_btn.get("found"):
             await mouse(w, mid, save_btn["x"], save_btn["y"])
-            mid += 3
+            mid += 4
         else:
             for typ in ("keyDown", "keyUp"):
                 await call(
