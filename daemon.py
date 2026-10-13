@@ -175,6 +175,7 @@ def tick(cfg: dict, state: dict) -> dict:
                 "chats": [
                     {
                         "who": c["who"],
+                        "sender": c.get("sender", ""),
                         "preview": c.get("preview", ""),
                         "unread": c.get("unread", 0),
                         "muted": False,

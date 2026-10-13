@@ -45,9 +45,18 @@ SCRAPE_JS = r"""
     const body = lines.filter(x =>
       x !== who && !/^\d+$/.test(x) && !/^\d+ unread/i.test(x) && !/^muted$/i.test(x)
     );
-    const preview = (body.length ? body[body.length - 1] : '').slice(0, 280);
+    // Group rows render as "<sender> : <message>"; the line before a lone ":" is the sender.
+    // 1:1 chats have no sender line — sender stays ''.
+    let sender = '';
+    let preview = (body.length ? body[body.length - 1] : '').slice(0, 280);
+    const ci = body.findIndex(x => x === ':');
+    if (ci > 0) {
+      sender = body[ci - 1];
+      const rest = body.slice(ci + 1).join(' ').trim();
+      if (rest) preview = rest.slice(0, 280);
+    }
     const time = lines.length > 1 ? lines[1] : '';
-    out.push({ who, preview, unread, muted, time });
+    out.push({ who, sender, preview, unread, muted, time });
   }
   return {
     ok: true,
