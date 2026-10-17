@@ -22,6 +22,25 @@ SCRAPE_JS = r"""
     const qr = /Scan.*?QR|Link with phone|Log into WhatsApp/i.test(text);
     return { error: qr ? 'qr_login' : 'no_chat_list', sample: text };
   }
+  // Stable chat JID (e.g. 1234@lid, 1203...@g.us) from the row's React props.
+  // Read-only walk up the fiber tree; '' if WhatsApp changes internals.
+  const jidOf = (row) => {
+    try {
+      const el = row.querySelector('div') || row;
+      const k = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+      let f = k ? el[k] : null, d = 0;
+      while (f && d < 60) {
+        const p = f.memoizedProps;
+        if (p) for (const key of Object.keys(p)) {
+          const v = p[key];
+          const id = v && v.id && (v.id._serialized || (v.id.user && v.id.server && v.id.user + '@' + v.id.server));
+          if (typeof id === 'string' && /@(c\.us|g\.us|lid|newsletter|broadcast)$/.test(id)) return id;
+        }
+        f = f.return; d++;
+      }
+    } catch (e) {}
+    return '';
+  };
   const items = pane.querySelectorAll('[role="row"], [role="listitem"]');
   const out = [];
   const seen = {};
@@ -56,7 +75,7 @@ SCRAPE_JS = r"""
       if (rest) preview = rest.slice(0, 280);
     }
     const time = lines.length > 1 ? lines[1] : '';
-    out.push({ who, sender, preview, unread, muted, time });
+    out.push({ who, chat_id: jidOf(el), sender, preview, unread, muted, time });
   }
   return {
     ok: true,

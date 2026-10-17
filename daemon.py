@@ -8,6 +8,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -123,6 +124,27 @@ def post_webhook(cfg: dict, payload: dict) -> bool:
         return False
 
 
+_EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0000FE0F\U0000200D\U0001F1E6-\U0001F1FF\U0000E000-\U0000F8FF]"
+)
+
+
+def norm_title(s: str) -> str:
+    """Emoji-stripped, whitespace-collapsed, casefolded title."""
+    return " ".join(_EMOJI_RE.sub("", s or "").split()).casefold()
+
+
+def is_denied(chat: dict, cfg: dict) -> bool:
+    """Exact match only: chat_id in denylist_ids, or whole normalized title in
+    denylist. No substring matching ("AF" must not hit "Afaf Mousa")."""
+    ids = cfg.get("denylist_ids") or {}
+    cid = (chat.get("chat_id") or "").strip()
+    if cid and cid in ids:
+        return True
+    titles = {norm_title(x) for x in (cfg.get("denylist") or []) if norm_title(x)}
+    return norm_title(chat.get("who") or "") in titles
+
+
 def tick(cfg: dict, state: dict) -> dict:
     data = scrape()
     if data.get("error"):
@@ -142,14 +164,11 @@ def tick(cfg: dict, state: dict) -> dict:
         return state
 
     chats = data.get("chats") or []
-    deny = {x.lower() for x in (cfg.get("denylist") or [])}
     unmuted_unread = []
     for c in chats:
         if c.get("muted") or int(c.get("unread") or 0) <= 0:
             continue
-        who = (c.get("who") or "").strip()
-        who_l = who.lower()
-        if any(d in who_l or who_l in d for d in deny if d):
+        if is_denied(c, cfg):
             continue
         unmuted_unread.append(c)
 
@@ -175,6 +194,7 @@ def tick(cfg: dict, state: dict) -> dict:
                 "chats": [
                     {
                         "who": c["who"],
+                        "chat_id": c.get("chat_id", ""),
                         "sender": c.get("sender", ""),
                         "preview": c.get("preview", ""),
                         "unread": c.get("unread", 0),
