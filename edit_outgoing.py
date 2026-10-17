@@ -11,6 +11,7 @@ verifies the bubble shows the new text (and preferably an Edited label).
 from __future__ import annotations
 
 import argparse
+from wa_cdp import WPN_JS, find_search_input, open_contact
 import asyncio
 import json
 import os
@@ -215,102 +216,13 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
         )
 
         if not already:
-            loc = await evaluate(
-                w,
-                mid,
-                f"""(() => {{
-                  const want = {json.dumps(contact)};
-                  const phoneDigits = {json.dumps(digits_only(contact))};
-                  const spans = [...document.querySelectorAll('#pane-side span[title], span[title]')];
-                  let el = spans.find(s => s.getAttribute('title') === want);
-                  if (!el && phoneDigits.length >= 8) {{
-                    el = spans.find(s => {{
-                      const dig = (s.getAttribute('title')||'').replace(/\\D/g,'');
-                      return dig.length >= 8 && (dig.endsWith(phoneDigits.slice(-9)) || phoneDigits.endsWith(dig.slice(-9)));
-                    }});
-                  }}
-                  if (!el) return {{found:false, titles: spans.map(s=>s.getAttribute('title')).filter(Boolean).slice(0,30)}};
-                  const row = el.closest('[data-testid="cell-frame-container"]') || el.closest('[role="row"], [role="listitem"]') || el;
-                  el.scrollIntoView({{block:'center'}});
-                  const r = row.getBoundingClientRect();
-                  return {{found:true, title: el.getAttribute('title'), x:r.x+r.width/2, y:r.y+r.height/2}};
-                }})()""",
-            )
-            mid += 1
-            if not loc or not loc.get("found"):
-                if not do_search:
-                    die(f"contact not found: {loc}")
-                sloc = await evaluate(
-                    w,
-                    mid,
-                    """(() => {
-                      const inp = document.querySelector('input[aria-label="Search or start a new chat"]');
-                      if (!inp) return null;
-                      const r = inp.getBoundingClientRect();
-                      return {x:r.x+r.width/2,y:r.y+r.height/2};
-                    })()""",
-                )
-                mid += 1
-                if not sloc:
-                    die("not in list and no search")
-                await mouse(w, mid, sloc["x"], sloc["y"])
-                mid += 4
-                q = digits_only(contact) or contact
-                await call(w, mid, "Input.insertText", {"text": q})
-                mid += 1
-                await asyncio.sleep(1.5)
-                loc = await evaluate(
-                    w,
-                    mid,
-                    f"""(() => {{
-                      const phoneDigits = {json.dumps(digits_only(contact))};
-                      const want = {json.dumps(contact)};
-                      const spans = [...document.querySelectorAll('span[title]')];
-                      let el = spans.find(s => s.getAttribute('title') === want);
-                      if (!el) el = spans.find(s => {{
-                        const dig=(s.getAttribute('title')||'').replace(/\\D/g,'');
-                        return dig.length>=8 && (dig.endsWith(phoneDigits.slice(-9))||phoneDigits.endsWith(dig.slice(-9)));
-                      }});
-                      if (!el) return {{found:false}};
-                      const row = el.closest('[data-testid="cell-frame-container"]') || el;
-                      const r = row.getBoundingClientRect();
-                      return {{found:true, title: el.getAttribute('title'), x:r.x+r.width/2, y:r.y+r.height/2}};
-                    }})()""",
-                )
-                mid += 1
-                if not loc or not loc.get("found"):
-                    die(f"contact not found after search: {loc}")
-            await mouse(w, mid, loc["x"], loc["y"])
-            mid += 4
-            await asyncio.sleep(1.1)
-
-        # Header verify
-        hdr2 = await evaluate(
-            w,
-            mid,
-            f"""(() => {{
-              const contact = {json.dumps(contact)};
-              const phoneDigits = {json.dumps(digits_only(contact))};
-              const headerEl = document.querySelector('#main header');
-              const headerText = (headerEl && headerEl.innerText) || '';
-              const parts = [...document.querySelectorAll('#main header span[title], #main header [dir="auto"]')]
-                .map(e => (e.getAttribute('title')||e.textContent||'').trim()).filter(Boolean);
-              const blob = (parts.join(' ') + ' ' + headerText).trim();
-              const dig = blob.replace(/\\D/g, '');
-              const phoneHit = phoneDigits.length >= 8 && dig.length >= 8 && (
-                dig.includes(phoneDigits) || phoneDigits.includes(dig)
-                || dig.endsWith(phoneDigits.slice(-9)) || phoneDigits.endsWith(dig.slice(-9))
-              );
-              const titleHit = parts.some(h => h === contact || h.includes(contact)) || blob.includes(contact);
-              return {{
-                ok: !!(document.querySelector('#main footer div[contenteditable="true"]') && (titleHit || phoneHit)),
-                parts, headerText: headerText.slice(0, 160), dig, phoneHit, titleHit
-              }};
-            }})()""",
-        )
-        mid += 1
-        if not hdr2 or not hdr2.get("ok"):
-            die(f"refusing edit; header does not match contact={contact!r} state={hdr2}")
+            # Shared opener: exact title or phone (incl. saved contacts via
+            # React props), then verifies the chat header matches.
+            try:
+                mid, _title = await open_contact(w, mid, contact, via_search_if_missing=do_search)
+            except RuntimeError as e:
+                die(f"refusing: could not open {contact!r}: {e}")
+            await asyncio.sleep(0.6)
 
         # find outgoing bubble with needle
         bubble = await evaluate(

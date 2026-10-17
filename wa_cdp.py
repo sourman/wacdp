@@ -30,6 +30,45 @@ def _synthetic_clicks_enabled() -> bool:
 SYNTHETIC_CLICKS = _synthetic_clicks_enabled()
 
 
+# JS: phone digits of a chat row/header from WhatsApp's React props (saved
+# contacts hide the number in the title; @lid ids carry no digits).
+WPN_JS = r"""const __wpn = (node, allowMain) => {
+            // Phone digits of the CHAT this row/header represents. Only trusts a
+            // props object whose own id is the chat: groups/newsletters return ''
+            // (never a participant's or last sender's number).
+            try {
+              if (!node) return '';
+              // Row lookups must ignore spans inside the open chat (#main header
+              // participant names carry contact props of group members).
+              if (!allowMain && node.closest && node.closest('#main')) return '';
+              const tries = [node, node.querySelector && node.querySelector('div')].filter(Boolean);
+              for (const el of tries) {
+                const k = Object.keys(el).find(k => k.startsWith('__reactFiber'));
+                let f = k ? el[k] : null, d = 0;
+                while (f && d < 40) {
+                  const p = f.memoizedProps;
+                  if (p) for (const key of Object.keys(p)) {
+                    const v = p[key];
+                    const id = v && typeof v === 'object' && v.id && v.id._serialized;
+                    if (typeof id !== 'string') continue;
+                    if (/@(g\.us|newsletter|broadcast)$/.test(id)) return '';
+                    if (/@c\.us$/.test(id)) return id.replace(/\D/g, '');
+                    if (/@lid$/.test(id)) {
+                      const c = v.contact || v.__x_contact || v;
+                      const pn = c && (c.phoneNumber || c.__x_phoneNumber);
+                      const ser = pn && (pn._serialized || pn.user);
+                      return typeof ser === 'string' ? ser.replace(/\D/g, '') : '';
+                    }
+                  }
+                  f = f.return; d++;
+                }
+              }
+            } catch (e) {}
+            return '';
+          };
+"""
+
+
 def resolve_cdp_http() -> str:
     """Resolve CDP HTTP base URL.
 
@@ -327,13 +366,14 @@ async def find_list_title(w, mid, contact: str, allow_substring: bool, phone_que
         w,
         mid,
         f"""(() => {{
+          {WPN_JS}
           const want = {json.dumps(contact)};
           const allowSub = {json.dumps(allow_substring)};
           const phoneDigits = {json.dumps(digits_only(phone_query or contact))};
           const spans = [...document.querySelectorAll('#pane-side span[title]')];
           const all = spans.map(s => {{
             const title = s.getAttribute('title') || '';
-            const dig = title.replace(/\\D/g, '');
+            const dig = title.replace(/\\D/g, '') || __wpn(s.closest('[role="row"], [role="listitem"]') || s);
             const row = s.closest('[data-testid="cell-frame-container"]')
               || s.closest('[role="row"], [role="listitem"]') || s;
             const r = row.getBoundingClientRect();
@@ -488,6 +528,7 @@ async def open_via_search(w, mid, query: str):
         w,
         mid,
         f"""(() => {{
+          {WPN_JS}
           const digits = {json.dumps(digits_only(query))};
           const want = {json.dumps(query)};
           const out = [];
@@ -495,7 +536,7 @@ async def open_via_search(w, mid, query: str):
             const title = el.getAttribute('title') || '';
             if (!title || title.length > 90) continue;
             if (/^(All|Unread|Favorites|Groups|Communities)$/i.test(title)) continue;
-            const dig = title.replace(/\\D/g, '');
+            const dig = title.replace(/\\D/g, '') || __wpn(el.closest('[role="row"], [role="listitem"]') || el);
             const row = el.closest('[data-testid="cell-frame-container"]')
               || el.closest('[role="listitem"], [role="row"]') || el;
             const r = row.getBoundingClientRect();

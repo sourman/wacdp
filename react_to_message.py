@@ -13,6 +13,7 @@ Flow (mirrors successful computerUse path):
 from __future__ import annotations
 
 import argparse
+from wa_cdp import WPN_JS
 import asyncio
 import json
 import os
@@ -106,13 +107,14 @@ async def find_row(w, mid, contact: str, allow_substring: bool):
         w,
         mid,
         f"""(() => {{
+          {WPN_JS}
           const want = {json.dumps(contact)};
           const allowSub = {json.dumps(allow_substring)};
           const phoneDigits = {json.dumps(digits_only(contact))};
           const spans = [...document.querySelectorAll('#pane-side span[title], span[title]')];
           const scored = spans.map(s => {{
             const title = s.getAttribute('title') || '';
-            const dig = title.replace(/\\D/g, '');
+            const dig = title.replace(/\\D/g, '') || __wpn(s.closest('[role="row"], [role="listitem"]') || s);
             const exact = title === want;
             const sub = allowSub && title.includes(want);
             const phoneHit = phoneDigits.length >= 8 && dig.length >= 8 && (
@@ -202,6 +204,7 @@ async def header_ok(w, mid, contact: str):
         w,
         mid,
         f"""(() => {{
+          {WPN_JS}
           const contact = {json.dumps(contact)};
           const phoneDigits = {json.dumps(digits_only(contact))};
           const headerEl = document.querySelector('#main header');
@@ -209,7 +212,7 @@ async def header_ok(w, mid, contact: str):
           const parts = [...document.querySelectorAll('#main header span[title], #main header [dir="auto"]')]
             .map(e => (e.getAttribute('title')||e.textContent||'').trim()).filter(Boolean);
           const blob = (parts.join(' ') + ' ' + headerText).trim();
-          const dig = blob.replace(/\\D/g, '');
+          const dig = blob.replace(/\\D/g, '') + ' ' + __wpn(document.querySelector('#main header'), true);
           const phoneHit = phoneDigits.length >= 8 && dig.length >= 8 && (
             dig.includes(phoneDigits) || phoneDigits.includes(dig)
             || dig.endsWith(phoneDigits.slice(-9)) || phoneDigits.endsWith(dig.slice(-9))
