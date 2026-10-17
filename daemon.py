@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Poll WA chat list; POST new unmuted unreads to Gate webhook.
 
+Also watches open_cases.json for outbound (from_me) replies on watched contacts.
+
 Single-instance: exclusive flock on daemon.lock (second copy exits 0).
 """
 from __future__ import annotations
@@ -20,6 +22,8 @@ from pathlib import Path
 DIR = Path(__file__).resolve().parent
 STATE = DIR / "state.json"
 CONFIG = DIR / "config.json"
+OPEN_CASES = DIR / "open_cases.json"
+GATE_SENT = DIR / "gate_sent.json"
 SCRAPE = DIR / "scrape_chat_list.py"
 LOG = DIR / "daemon.log"
 LOCK = DIR / "daemon.lock"
@@ -69,9 +73,29 @@ def acquire_lock():
     return fh
 
 
-def scrape():
+def resolve_cdp(cfg: dict) -> str:
+    env = (os.environ.get("WA_CDP_HTTP") or "").strip()
+    if env:
+        return env.rstrip("/")
+    cdp = (cfg.get("cdp_http") or "").strip()
+    if cdp:
+        return cdp.rstrip("/")
+    display = os.environ.get("DISPLAY") or ""
+    if display.startswith(":"):
+        try:
+            num = int(display[1:].split(".", 1)[0])
+            return f"http://127.0.0.1:{9222 + num}"
+        except ValueError:
+            pass
+    return ""
+
+
+def scrape(cfg: dict | None = None):
     env = os.environ.copy()
-    env.setdefault("WA_CDP_HTTP", "http://127.0.0.1:9427")
+    cfg = cfg or load_json(CONFIG, {})
+    cdp = resolve_cdp(cfg)
+    if cdp:
+        env["WA_CDP_HTTP"] = cdp
     r = subprocess.run(
         [sys.executable, str(SCRAPE)],
         capture_output=True,
@@ -90,11 +114,15 @@ def fingerprint(chat: dict) -> str:
     return f"{chat.get('who','')}|{chat.get('unread',0)}|{chat.get('preview','')[:80]}"
 
 
+def norm_ws(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+
 def post_webhook(cfg: dict, payload: dict) -> bool:
     url = cfg.get("webhook_url") or ""
     key = cfg.get("webhook_key") or os.environ.get("GATE_WA_WEBHOOK_KEY", "")
     if not url or not key:
-        log("missing webhook_url or key in config/env — skip post")
+        log("missing webhook_url or key in config/env - skip post")
         return False
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
@@ -145,8 +173,112 @@ def is_denied(chat: dict, cfg: dict) -> bool:
     return norm_title(chat.get("who") or "") in titles
 
 
+def load_open_cases() -> dict:
+    data = load_json(OPEN_CASES, {"cases": {}})
+    if not isinstance(data, dict):
+        return {"cases": {}}
+    cases = data.get("cases")
+    if not isinstance(cases, dict):
+        data["cases"] = {}
+    return data
+
+
+def prune_expired_cases(cases_doc: dict, now: float) -> bool:
+    """Drop expired cases in-place. Returns True if file should be rewritten."""
+    cases = cases_doc.get("cases") or {}
+    changed = False
+    for who in list(cases.keys()):
+        meta = cases.get(who) or {}
+        try:
+            opened = float(meta.get("opened_at") or 0)
+            ttl = float(meta.get("ttl_hours") if meta.get("ttl_hours") is not None else 48)
+        except (TypeError, ValueError):
+            opened, ttl = 0.0, 48.0
+        if opened and ttl >= 0 and now > opened + ttl * 3600:
+            log(f"open_cases expire: {who}")
+            cases.pop(who, None)
+            changed = True
+    return changed
+
+
+def gate_sent_suppresses(who: str, preview: str, now: float) -> bool:
+    gs = load_json(GATE_SENT, {})
+    if not isinstance(gs, dict):
+        return False
+    entry = gs.get(who)
+    if not isinstance(entry, dict):
+        return False
+    try:
+        until = float(entry.get("until") or 0)
+    except (TypeError, ValueError):
+        return False
+    if now >= until:
+        return False
+    stored = norm_ws(str(entry.get("preview") or ""))
+    cur = norm_ws(preview)
+    if not stored:
+        return False
+    return cur == stored or cur.startswith(stored)
+
+
+def process_open_cases(cfg: dict, state: dict, chats: list) -> None:
+    now = time.time()
+    cases_doc = load_open_cases()
+    if prune_expired_cases(cases_doc, now):
+        save_json(OPEN_CASES, cases_doc)
+
+    cases = cases_doc.get("cases") or {}
+    if not cases:
+        return
+
+    by_who = {(c.get("who") or ""): c for c in chats}
+    outbound_seen = state.setdefault("outbound_seen", {})
+    outbound_hits = []
+
+    for who, meta in list(cases.items()):
+        chat = by_who.get(who)
+        if not chat:
+            continue
+        if is_denied(chat, cfg):
+            continue
+        if not chat.get("from_me"):
+            continue
+        preview = chat.get("preview") or ""
+        inbound = (meta or {}).get("inbound_preview") or ""
+        if norm_ws(preview) == norm_ws(inbound):
+            continue
+        if outbound_seen.get(who) == preview[:80]:
+            continue
+        if gate_sent_suppresses(who, preview, now):
+            log(f"outbound skip gate_sent: {who}")
+            continue
+
+        outbound_hits.append(
+            {
+                "who": who,
+                "preview": preview,
+                "from_me": True,
+                "unread": int(chat.get("unread") or 0),
+                "related": list((meta or {}).get("related") or []),
+                "related_ids": list((meta or {}).get("related_ids") or []),
+                "inbound_preview": inbound,
+            }
+        )
+        outbound_seen[who] = preview[:80]
+        try:
+            meta["last_outbound_preview"] = preview[:80]
+        except Exception:
+            pass
+
+    if outbound_hits:
+        log(f"outbound hits: {[c['who'] for c in outbound_hits]}")
+        if post_webhook(cfg, {"event": "outbound", "chats": outbound_hits}):
+            # Persist optional last_outbound_preview on cases after successful post
+            save_json(OPEN_CASES, cases_doc)
+
+
 def tick(cfg: dict, state: dict) -> dict:
-    data = scrape()
+    data = scrape(cfg)
     if data.get("error"):
         log(f"scrape error: {data}")
         last_wedge = state.get("last_wedge_post", 0)
@@ -164,6 +296,9 @@ def tick(cfg: dict, state: dict) -> dict:
         return state
 
     chats = data.get("chats") or []
+    # --- open-cases outbound watches (independent of unread) ---
+    process_open_cases(cfg, state, chats)
+
     unmuted_unread = []
     for c in chats:
         if c.get("muted") or int(c.get("unread") or 0) <= 0:
@@ -212,11 +347,14 @@ def main() -> None:
     lock_fh = acquire_lock()
     cfg = load_json(CONFIG, {})
     if not cfg.get("webhook_url"):
-        log("No config.json webhook_url yet — waiting for setup")
+        log("No config.json webhook_url yet - waiting for setup")
     state = load_json(STATE, {"seen": {}})
+    cdp = resolve_cdp(cfg)
+    if not cdp:
+        log("No cdp_http in config and no WA_CDP_HTTP/DISPLAY - daemon cannot poll")
     log(
         f"daemon start pid={os.getpid()} interval={INTERVAL}s "
-        f"cdp={os.environ.get('WA_CDP_HTTP', 'http://127.0.0.1:9427')}"
+        f"cdp={cdp or 'UNSET'}"
     )
     try:
         while True:

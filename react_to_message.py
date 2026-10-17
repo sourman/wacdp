@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""React to a WhatsApp Web message via Gate box-chrome CDP.
+"""React to a WhatsApp Web message via box-chrome CDP.
 
 Usage:
-  WA_CDP_HTTP=http://127.0.0.1:9427 python3 react_to_message.py \\
+  WA_CDP_HTTP=http://127.0.0.1:9225 python3 react_to_message.py \\
     --contact '+201092600692' --needle 'You awesome bro' --emoji '❤️'
 
 Flow (mirrors successful computerUse path):
@@ -22,7 +22,9 @@ import urllib.request
 
 import websockets
 
-CDP = os.environ.get("WA_CDP_HTTP", "http://127.0.0.1:9427")
+from wa_cdp import resolve_cdp_http
+
+CDP = resolve_cdp_http()
 
 
 def digits_only(s: str) -> str:

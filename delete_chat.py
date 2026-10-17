@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Delete an entire WhatsApp Web chat via Gate box-chrome CDP.
+"""Delete an entire WhatsApp Web chat via box-chrome CDP.
 
 Usage:
-  WA_CDP_HTTP=http://127.0.0.1:9427 python3 delete_chat.py \\
+  WA_CDP_HTTP=http://127.0.0.1:9225 python3 delete_chat.py \\
     --contact '+20 10 92600692'
-  WA_CDP_HTTP=http://127.0.0.1:9427 python3 delete_chat.py \\
+  WA_CDP_HTTP=http://127.0.0.1:9225 python3 delete_chat.py \\
     --contact '+201092600692' --dry-run
 
 Opens chat → header Menu → Delete chat → confirm Delete.

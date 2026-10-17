@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Reliable WhatsApp Web send via Gate box-chrome CDP.
+"""Reliable WhatsApp Web send via box-chrome CDP.
 
 Usage:
-  WA_CDP_HTTP=http://127.0.0.1:9427 python3 send_to_contact.py --contact 'Name' --text '...'
-  WA_CDP_HTTP=http://127.0.0.1:9427 python3 send_to_contact.py --contact '+201092600692' --text '...'
+  WA_CDP_HTTP=http://127.0.0.1:9225 python3 send_to_contact.py --contact 'Name' --text '...'
+  WA_CDP_HTTP=http://127.0.0.1:9225 python3 send_to_contact.py --contact '+201092600692' --text '...'
 
 Guarantees:
   - Refuse if QR / no chat list
@@ -23,10 +23,44 @@ import os
 import sys
 import time
 import urllib.request
+from pathlib import Path
 
 import websockets
 
-CDP = os.environ.get("WA_CDP_HTTP", "http://127.0.0.1:9427")
+from wa_cdp import resolve_cdp_http
+
+CDP = resolve_cdp_http()
+
+DIR = Path(__file__).resolve().parent
+GATE_SENT = DIR / "gate_sent.json"
+
+
+def stamp_gate_sent(contact: str, text: str, resolved_title: str | None = None) -> None:
+    """Record Gate-originated send so daemon skips outbound webhook for ~120s."""
+    key = (resolved_title or contact or "").strip()
+    if not key:
+        return
+    preview = (text or "")[:80]
+    now = time.time()
+    try:
+        data = {}
+        if GATE_SENT.exists():
+            try:
+                data = json.loads(GATE_SENT.read_text(encoding="utf-8")) or {}
+            except Exception:
+                data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data[key] = {"preview": preview, "until": now + 120}
+        # Also stamp --contact if it differs (phone vs title)
+        ckey = (contact or "").strip()
+        if ckey and ckey != key:
+            data[ckey] = {"preview": preview, "until": now + 120}
+        GATE_SENT.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 # Synthetic click fallback: some CDP setups (notably headless Chromium) silently
 # drop Input.dispatchMouseEvent. When enabled, click() also dispatches synthetic
@@ -578,6 +612,7 @@ async def main(contact: str, text: str, allow_substring: bool, do_search: bool):
             if delivered
             else "bubble visible but no delivery tick yet — may not have reached phone",
         }
+        stamp_gate_sent(contact, text, loc.get("title"))
         print(json.dumps(out, ensure_ascii=False))
         if not delivered:
             sys.exit(2)

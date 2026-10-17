@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scrape WhatsApp Web chat list via CDP. List-only — never opens chats."""
+"""Scrape WhatsApp Web chat list via CDP. List-only - never opens chats."""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +10,9 @@ import urllib.request
 
 import websockets
 
-CDP_HTTP = os.environ.get("WA_CDP_HTTP", "http://127.0.0.1:9427")
+from wa_cdp import resolve_cdp_http
+
+CDP_HTTP = resolve_cdp_http()
 
 SCRAPE_JS = r"""
 (() => {
@@ -63,6 +65,7 @@ SCRAPE_JS = r"""
     const lines = (el.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
     const body = lines.filter(x =>
       x !== who && !/^\d+$/.test(x) && !/^\d+ unread/i.test(x) && !/^muted$/i.test(x)
+      && !/^\(You\)$/i.test(x)
     );
     // Group rows render as "<sender> : <message>"; the line before a lone ":" is the sender.
     // 1:1 chats have no sender line — sender stays ''.
@@ -75,7 +78,21 @@ SCRAPE_JS = r"""
       if (rest) preview = rest.slice(0, 280);
     }
     const time = lines.length > 1 ? lines[1] : '';
-    out.push({ who, chat_id: jidOf(el), sender, preview, unread, muted, time });
+    // Attribution: chat-list preview is last activity, often Ahmed's outbound.
+    const selfRow = !!(el.querySelector('[data-testid="message-yourself-row"], [data-testid="you-label"]'));
+    const status = el.querySelector('[data-testid="last-msg-status"]');
+    let statusTitle = '';
+    if (status) {
+      const svgTitle = status.querySelector('svg title');
+      statusTitle = ((svgTitle && svgTitle.textContent) || status.getAttribute('title') || '').trim();
+    }
+    const tickOut = /wds-ic-read|wds-ic-delivered|wds-ic-sent|msg-check|msg-dblcheck|status-dblcheck|status-check/i.test(statusTitle)
+      || !!(status && status.querySelector('[data-icon="msg-check"], [data-icon="msg-dblcheck"], [data-icon="status-check"], [data-icon="status-dblcheck"]'));
+    const secondary = ((el.querySelector('[data-testid="cell-frame-secondary"]') || {}).innerText || preview || '');
+    const is_reaction = /^\s*Reacted\b/i.test(secondary) || /^\s*Reacted\b/i.test(preview);
+    const you_prefix = /^\s*You:\s*/i.test(preview) || /^\s*You:\s*/i.test(secondary);
+    const from_me = selfRow || tickOut || you_prefix;
+    out.push({ who, chat_id: jidOf(el), sender, preview, unread, muted, time, from_me, is_reaction, status_icon: statusTitle.slice(0, 64) || null });
   }
   return {
     ok: true,

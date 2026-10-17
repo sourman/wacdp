@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Open a WhatsApp Web chat via Gate box-chrome CDP (exact title or phone search).
+"""Open a WhatsApp Web chat via box-chrome CDP (exact title or phone search).
 
 Usage:
-  WA_CDP_HTTP=http://127.0.0.1:9427 python3 open_chat.py --contact '+201092600692'
-  WA_CDP_HTTP=http://127.0.0.1:9427 python3 open_chat.py --contact 'Exact Title'
+  WA_CDP_HTTP=http://127.0.0.1:9225 python3 open_chat.py --contact '+201092600692'
+  WA_CDP_HTTP=http://127.0.0.1:9225 python3 open_chat.py --contact 'Exact Title'
 
 Leaves #pane-side healthy (Escape after search). Prints JSON with exact title + header.
 """
