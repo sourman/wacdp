@@ -20,10 +20,17 @@ Scripts talk to an already-logged-in Chromium (URL from `WA_CDP_HTTP`, else `cdp
 | `forward_message.py` | Forward a bubble to another chat |
 | `react_to_message.py` | React with emoji |
 | `wa_cdp.py` | Shared CDP primitives |
-| `daemon.py` + `ensure.sh` / `supervise.sh` | Unmuted unread poll → webhook (denylist-only) |
+| `daemon.py` + `ensure.sh` / `supervise.sh` | Unmuted unread poll → webhook. Denylist is exact: `denylist_ids` (chat JID from scrape `chat_id`) or whole normalized titles; no substring match |
 
 Copy `config.json.example` → `config.json` locally. **Never commit webhook secrets.**
 
 ## License
 
 MIT
+
+## Notes
+
+- `scrape_chat_list.py` returns `chat_id` (JID), `sender` (group author), `from_me` per row.
+- Phone lookups work for saved contacts: the chat's number is read from WhatsApp Web's React props.
+- `WACDP_SYNTHETIC_CLICKS=1` (or a `.synthetic_clicks` file) adds JS click fallback for headless CDP. Off by default; don't enable on a normal Chrome.
+- Tests: `python3 -m unittest discover tests`
