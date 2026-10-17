@@ -24,6 +24,9 @@ while true; do
   code=$?
   set -e
   echo "$(date '+%F %T') daemon exited code=$code; restart in ${backoff}s" >>"$LOG"
+  if [[ "$code" -ne 0 && "$backoff" -ge 16 ]]; then
+    (cd "$DIR" && timeout 20 /usr/bin/python3 -c "import json,daemon;daemon.post_webhook(json.load(open('config.json')),{'event':'daemon_down','code':$code})" >>"$LOG" 2>&1 || true)
+  fi
   # exit 0 from flock contention is fine — don't spin hot
   if [[ "$code" -eq 0 ]]; then
     backoff=$BACKOFF
