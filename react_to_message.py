@@ -214,10 +214,11 @@ async def header_ok(w, mid, contact: str):
           );
           // WhatsApp sometimes renders group headers without the emoji in the
           // title (e.g. "Aquabros" for "Aquabros 🩳🤿"), so compare
-          // emoji-stripped forms too, in both directions.
+          // emoji-stripped forms too (exact only; a short header must not
+          // pass for a longer requested name).
           const norm = s => (s || '').replace(/[\\u{{1F300}}-\\u{{1FAFF}}\\u{{2600}}-\\u{{27BF}}\\u{{FE0F}}\\u{{200D}}]/gu, '').replace(/\\s+/g, ' ').trim();
           const cn = norm(contact);
-          const titleHit = parts.some(h => h === contact || h.includes(contact) || contact.includes(h) || norm(h) === cn)
+          const titleHit = parts.some(h => h === contact || h.includes(contact) || (cn && norm(h) === cn))
             || blob.includes(contact) || norm(blob).includes(cn);
           return {{
             ok: !!(document.querySelector('#main footer div[contenteditable="true"]') && (titleHit || phoneHit)),
