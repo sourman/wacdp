@@ -12,6 +12,23 @@ import websockets
 
 _DIR = Path(__file__).resolve().parent
 
+# Synthetic click fallback: some CDP setups (notably headless Chromium) silently
+# drop Input.dispatchMouseEvent. When enabled, mouse() also dispatches synthetic
+# JS mouse events on the element under the cursor. Default OFF: on a healthy
+# browser both would land and double-fire clicks. Enable with
+# WACDP_SYNTHETIC_CLICKS=1, or by dropping an (untracked) `.synthetic_clicks`
+# marker file next to this module; the env var wins when set.
+def _synthetic_clicks_enabled() -> bool:
+    env = os.environ.get("WACDP_SYNTHETIC_CLICKS", "").strip().lower()
+    if env in ("1", "true", "yes"):
+        return True
+    if env in ("0", "false", "no"):
+        return False
+    return (_DIR / ".synthetic_clicks").exists()
+
+
+SYNTHETIC_CLICKS = _synthetic_clicks_enabled()
+
 
 def resolve_cdp_http() -> str:
     """Resolve CDP HTTP base URL.
@@ -103,6 +120,29 @@ async def mouse(w, mid0, x, y, button="left", click_count=1):
             "clickCount": click_count,
         },
     )
+    if SYNTHETIC_CLICKS:
+        # JS fallback for setups where CDP input events don't land.
+        # Dispatch synthetic events on the element at the point.
+        btn_num = 2 if button == "right" else 0
+        await evaluate(
+            w,
+            mid0 + 3,
+            f"""(() => {{
+              const el = document.elementFromPoint({x}, {y});
+              if (!el) return false;
+              const o = {{bubbles: true, cancelable: true, clientX: {x}, clientY: {y}, button: {btn_num}}};
+              el.dispatchEvent(new MouseEvent('mouseover', o));
+              el.dispatchEvent(new MouseEvent('mousedown', o));
+              el.dispatchEvent(new MouseEvent('mouseup', o));
+              if ({json.dumps(button)} === 'right') {{
+                el.dispatchEvent(new MouseEvent('contextmenu', o));
+              }} else {{
+                el.dispatchEvent(new MouseEvent('click', o));
+                try {{ el.click(); }} catch (e) {{}}
+              }}
+              return true;
+            }})()""",
+        )
 
 
 async def key(w, mid, name, code, vk):
@@ -266,7 +306,7 @@ async def clear_search(w, mid):
         mid += 1
         if state and state.get("back"):
             await mouse(w, mid, state["back"]["x"], state["back"]["y"])
-            mid += 3
+            mid += 4
             await asyncio.sleep(0.3)
         elif state and state.get("needEsc"):
             mid = await escape_ui(w, mid, 1)
@@ -341,7 +381,7 @@ async def click_title(w, mid, title: str, x: float, y: float):
     if loc:
         x, y = loc["x"], loc["y"]
     await mouse(w, mid, x, y)
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.25)
     await evaluate(
         w,
@@ -414,14 +454,14 @@ async def open_via_search(w, mid, query: str):
         if not icon:
             raise RuntimeError(f"no search input: {search}")
         await mouse(w, mid, icon["x"], icon["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.5)
         mid, search = await find_search_input(w, mid)
         if not search.get("found"):
             raise RuntimeError(f"no search input after icon: {search}")
 
     await mouse(w, mid, search["x"], search["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.2)
     await evaluate(
         w,

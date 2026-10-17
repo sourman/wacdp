@@ -154,7 +154,7 @@ async def open_via_search(w, mid, contact: str):
     if not loc:
         die("contact not in list and no search input")
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.2)
     dig = digits_only(contact)
     query = dig if looks_like_phone(contact) and dig else contact.strip()
@@ -212,7 +212,14 @@ async def header_ok(w, mid, contact: str):
             dig.includes(phoneDigits) || phoneDigits.includes(dig)
             || dig.endsWith(phoneDigits.slice(-9)) || phoneDigits.endsWith(dig.slice(-9))
           );
-          const titleHit = parts.some(h => h === contact || h.includes(contact)) || blob.includes(contact);
+          // WhatsApp sometimes renders group headers without the emoji in the
+          // title (e.g. "Aquabros" for "Aquabros 🩳🤿"), so compare
+          // emoji-stripped forms too (exact only; a short header must not
+          // pass for a longer requested name).
+          const norm = s => (s || '').replace(/[\\u{{1F300}}-\\u{{1FAFF}}\\u{{2600}}-\\u{{27BF}}\\u{{FE0F}}\\u{{200D}}]/gu, '').replace(/\\s+/g, ' ').trim();
+          const cn = norm(contact);
+          const titleHit = parts.some(h => h === contact || h.includes(contact) || (cn && norm(h) === cn))
+            || blob.includes(contact) || norm(blob).includes(cn);
           return {{
             ok: !!(document.querySelector('#main footer div[contenteditable="true"]') && (titleHit || phoneHit)),
             parts, headerText: headerText.slice(0, 160), dig, phoneHit, titleHit
@@ -258,7 +265,7 @@ async def ensure_chat_open(w, mid, contact: str, do_search: bool):
         die(f"title mismatch {loc.get('title')!r} != {contact!r}")
 
     await mouse(w, mid, loc["x"], loc["y"])
-    mid += 3
+    mid += 4
     await asyncio.sleep(0.35)
     await evaluate(
         w,
@@ -541,7 +548,7 @@ async def main(contact: str, needle: str, emoji: str, do_search: bool):
             die(f"React affordance not found: {react}")
 
         await mouse(w, mid, react["x"], react["y"])
-        mid += 3
+        mid += 4
         await asyncio.sleep(0.55)
 
         mid, emo = await locate_emoji(w, mid, emoji, bubble["top"], bubble["bottom"])
@@ -557,7 +564,7 @@ async def main(contact: str, needle: str, emoji: str, do_search: bool):
         mid += 1
         await asyncio.sleep(0.12)
         await mouse(w, mid, emo["x"], emo["y"])
-        mid += 3
+        mid += 4
 
         deadline = time.time() + 8
         last = None

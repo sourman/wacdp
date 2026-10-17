@@ -153,7 +153,7 @@ async def main(contact: str, needle: str, for_me_ok: bool, do_search: bool):
                 if not sloc:
                     die("not in list and no search")
                 await mouse(w, mid, sloc["x"], sloc["y"])
-                mid += 3
+                mid += 4
                 q = digits_only(contact) or contact
                 await call(w, mid, "Input.insertText", {"text": q})
                 mid += 1
@@ -180,7 +180,7 @@ async def main(contact: str, needle: str, for_me_ok: bool, do_search: bool):
                 if not loc or not loc.get("found"):
                     die(f"contact not found after search: {loc}")
             await mouse(w, mid, loc["x"], loc["y"])
-            mid += 3
+            mid += 4
             await asyncio.sleep(1.1)
 
         # find outgoing bubble
@@ -243,10 +243,10 @@ async def main(contact: str, needle: str, for_me_ok: bool, do_search: bool):
         mid += 1
         if opts and opts.get("found"):
             await mouse(w, mid, opts["x"], opts["y"])
-            mid += 3
+            mid += 4
         else:
             await mouse(w, mid, bubble["x"], bubble["y"], button="right")
-            mid += 3
+            mid += 4
         await asyncio.sleep(0.4)
 
         delete_item = await evaluate(
@@ -264,7 +264,7 @@ async def main(contact: str, needle: str, for_me_ok: bool, do_search: bool):
         if not delete_item or not delete_item.get("found"):
             die(f"Delete menu missing: {delete_item}")
         await mouse(w, mid, delete_item["x"], delete_item["y"])
-        mid += 3
+        mid += 4
 
         mode = None
         # Wait for confirm: either bottom aria Delete, or Delete for everyone text
@@ -300,18 +300,18 @@ async def main(contact: str, needle: str, for_me_ok: bool, do_search: bool):
             aria_del = next((a for a in (step.get("aria") or []) if a["aria"] == "Delete"), None)
             if everyone:
                 await mouse(w, mid, everyone["x"], everyone["y"])
-                mid += 3
+                mid += 4
                 mode = "everyone"
                 break
             if for_me and for_me_ok and not everyone:
                 await mouse(w, mid, for_me["x"], for_me["y"])
-                mid += 3
+                mid += 4
                 mode = "for_me"
                 break
             if aria_del and not everyone:
                 # first-stage confirm bar — click Delete then keep looping for everyone
                 await mouse(w, mid, aria_del["x"], aria_del["y"])
-                mid += 3
+                mid += 4
                 await asyncio.sleep(0.5)
                 continue
         else:

@@ -7,3 +7,5 @@ state.json
 *.lock
 .env
 .DS_Store
+
+.synthetic_clicks
