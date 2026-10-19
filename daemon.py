@@ -2,6 +2,8 @@
 """Poll WA chat list; POST new unmuted unreads to Gate webhook.
 
 Also watches open_cases.json for outbound (from_me) replies on watched contacts.
+A chat left open never grows an unread badge (WhatsApp marks the reply read);
+those still alert when the list preview or clock time changes on an inbound row.
 
 Single-instance: exclusive flock on daemon.lock (second copy exits 0).
 """
@@ -201,24 +203,201 @@ def prune_expired_cases(cases_doc: dict, now: float) -> bool:
     return changed
 
 
-def gate_sent_suppresses(who: str, preview: str, now: float) -> bool:
-    gs = load_json(GATE_SENT, {})
+def _gate_entry(who: str, now: float, gs: dict | None = None):
+    """Live gate_sent row for who, or None. Pass gs to avoid reading the file."""
+    if gs is None:
+        gs = load_json(GATE_SENT, {})
     if not isinstance(gs, dict):
-        return False
+        return None
     entry = gs.get(who)
     if not isinstance(entry, dict):
-        return False
+        return None
     try:
         until = float(entry.get("until") or 0)
     except (TypeError, ValueError):
-        return False
+        return None
     if now >= until:
+        return None
+    return entry
+
+
+def gate_sent_suppresses(who: str, preview: str, now: float, gs: dict | None = None) -> bool:
+    entry = _gate_entry(who, now, gs)
+    if not entry:
         return False
     stored = norm_ws(str(entry.get("preview") or ""))
     cur = norm_ws(preview)
     if not stored:
         return False
     return cur == stored or cur.startswith(stored)
+
+
+def stamped_outbound(who: str, preview: str, now: float, gs: dict | None = None) -> bool:
+    """True when preview is exactly a script send still inside its gate_sent window."""
+    entry = _gate_entry(who, now, gs)
+    if not entry:
+        return False
+    stored = norm_ws(str(entry.get("preview") or ""))
+    return bool(stored) and norm_ws(preview) == stored
+
+
+# Chat-list clock ("1:02 PM" / "13:02"). Day labels ("Yesterday", "Monday") are not.
+_CLOCK_RE = re.compile(r"\d{1,2}:\d{2}")
+# "You: …", "You reacted …", "You deleted …" — not "You there?".
+_OWN_RE = re.compile(r"^\s*you\s*(?::|\breacted\b|\bdeleted\b)", re.IGNORECASE)
+# "Reacted ❤️ to …", "You reacted …", "<name> reacted ❤️ to …".
+# The name form requires "reacted <token> to" so a sentence like
+# "I reacted badly" is still an inbound message.
+_REACTION_RE = re.compile(
+    r"^\s*(?:you\s+)?reacted\b|^\s*[^:\n]{1,60}?\sreacted\s+\S+\s+to\b",
+    re.IGNORECASE,
+)
+_TICK_RE = re.compile(
+    r"wds-ic-read|wds-ic-delivered|wds-ic-sent|msg-check|msg-dblcheck|"
+    r"status-dblcheck|status-check",
+    re.IGNORECASE,
+)
+
+
+def is_clock_time(value: str) -> bool:
+    return bool(_CLOCK_RE.search(value or ""))
+
+
+def is_own_activity(chat: dict) -> bool:
+    """User's own row: from_me, a You: prefix, or an outbound status tick."""
+    if not isinstance(chat, dict):
+        return False
+    if chat.get("from_me"):
+        return True
+    if _OWN_RE.match(norm_ws(str(chat.get("preview") or ""))):
+        return True
+    icon = str(chat.get("status_icon") or "")
+    return bool(icon and _TICK_RE.search(icon))
+
+
+def is_reaction_activity(chat: dict) -> bool:
+    if not isinstance(chat, dict):
+        return False
+    if chat.get("is_reaction"):
+        return True
+    return bool(_REACTION_RE.match(norm_ws(str(chat.get("preview") or ""))))
+
+
+def _unread_count(chat: dict) -> int:
+    try:
+        return int(chat.get("unread") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def chat_snapshot(chat: dict) -> dict:
+    """Comparable list-row state. Preview/time are whitespace-normalized."""
+    return {
+        "preview": norm_ws(str(chat.get("preview") or "")),
+        "time": norm_ws(str(chat.get("time") or "")),
+        "from_me": bool(chat.get("from_me")),
+        "is_reaction": bool(chat.get("is_reaction")),
+        "unread": _unread_count(chat),
+    }
+
+
+def inbound_read_activity(prev: dict | None, chat: dict) -> bool:
+    """Inbound list change that may have no unread badge.
+
+    The first time a chat is seen, prev is missing and this is False (seed
+    the baseline, do not replay history). Own sends and reactions are False.
+    A changed non-empty preview counts. The same preview with a new clock
+    time counts (another copy of the same text). A roll from a clock to
+    "Yesterday" or a weekday does not.
+    """
+    if not isinstance(prev, dict) or not isinstance(chat, dict):
+        return False
+    if is_own_activity(chat) or is_reaction_activity(chat):
+        return False
+    cur = chat_snapshot(chat)
+    prev_preview = norm_ws(str(prev.get("preview") or ""))
+    if cur["preview"] and cur["preview"] != prev_preview:
+        return True
+    prev_time = norm_ws(str(prev.get("time") or ""))
+    if cur["preview"] and cur["time"] and cur["time"] != prev_time and is_clock_time(cur["time"]):
+        return True
+    return False
+
+
+def _unread_payload(chat: dict, reason: str) -> dict:
+    # Historical fields, plus reason (badge = unread count, preview = list diff).
+    return {
+        "who": chat.get("who") or "",
+        "chat_id": chat.get("chat_id", ""),
+        "sender": chat.get("sender", ""),
+        "preview": chat.get("preview", ""),
+        "unread": _unread_count(chat),
+        "muted": False,
+        "reason": reason,
+    }
+
+
+def diff_incoming(
+    state: dict,
+    chats: list,
+    cfg: dict,
+    now: float | None = None,
+    gate_sent: dict | None = None,
+) -> list:
+    """Update state['seen'] / state['baseline'] and return unread payloads.
+
+    ``badge``: unmuted, not denied, not a reaction, unread > 0, fingerprint changed.
+    ``preview``: unread is 0, but inbound_read_activity against the saved row.
+    A preview *text* change that exactly matches a live gate_sent stamp is the
+    user's own send (status ticks can lag one poll) and is not alerted. A later
+    message with that same text still alerts via a clock-time change.
+
+    Does not post the webhook. ``reason`` is the only field added to each chat.
+    """
+    if now is None:
+        now = time.time()
+    if gate_sent is None:
+        gate_sent = load_json(GATE_SENT, {})
+    if not isinstance(gate_sent, dict):
+        gate_sent = {}
+
+    hits: list = []
+    seen = state.setdefault("seen", {})
+    if not isinstance(seen, dict):
+        seen = {}
+        state["seen"] = seen
+    baseline = state.setdefault("baseline", {})
+    if not isinstance(baseline, dict):
+        baseline = {}
+        state["baseline"] = baseline
+
+    for c in chats or []:
+        if not isinstance(c, dict):
+            continue
+        who = c.get("who") or ""
+        if not who:
+            continue
+        prev = baseline.get(who) if isinstance(baseline.get(who), dict) else None
+        snap = chat_snapshot(c)
+        unread = snap["unread"]
+        reason = None
+        if not c.get("muted") and not is_denied(c, cfg):
+            if unread > 0 and not is_reaction_activity(c):
+                fp = fingerprint(c)
+                if seen.get(who) != fp:
+                    reason = "badge"
+                    seen[who] = fp
+            elif unread <= 0 and inbound_read_activity(prev, c):
+                prev_preview = norm_ws(str((prev or {}).get("preview") or ""))
+                text_changed = snap["preview"] != prev_preview
+                if not (text_changed and stamped_outbound(who, snap["preview"], now, gate_sent)):
+                    reason = "preview"
+        if unread == 0:
+            seen.pop(who, None)
+        baseline[who] = snap
+        if reason:
+            hits.append(_unread_payload(c, reason))
+    return hits
 
 
 def process_open_cases(cfg: dict, state: dict, chats: list) -> None:
@@ -299,46 +478,13 @@ def tick(cfg: dict, state: dict) -> dict:
     # --- open-cases outbound watches (independent of unread) ---
     process_open_cases(cfg, state, chats)
 
-    unmuted_unread = []
-    for c in chats:
-        if c.get("muted") or int(c.get("unread") or 0) <= 0:
-            continue
-        if is_denied(c, cfg):
-            continue
-        unmuted_unread.append(c)
-
-    new_hits = []
-    seen = state.setdefault("seen", {})
-    for c in unmuted_unread:
-        fp = fingerprint(c)
-        if seen.get(c["who"]) != fp:
-            new_hits.append(c)
-            seen[c["who"]] = fp
-
-    for who in list(seen.keys()):
-        match = next((c for c in chats if c["who"] == who), None)
-        if match and int(match.get("unread") or 0) == 0:
-            seen.pop(who, None)
-
+    # badge: unread > 0. preview: inbound list change while unread stays 0
+    # (chat was open, so WhatsApp marked the reply read). Event type stays
+    # "unread"; each chat carries reason "badge" or "preview".
+    new_hits = diff_incoming(state, chats, cfg)
     if new_hits:
         log(f"new hits: {[c['who'] for c in new_hits]}")
-        post_webhook(
-            cfg,
-            {
-                "event": "unread",
-                "chats": [
-                    {
-                        "who": c["who"],
-                        "chat_id": c.get("chat_id", ""),
-                        "sender": c.get("sender", ""),
-                        "preview": c.get("preview", ""),
-                        "unread": c.get("unread", 0),
-                        "muted": False,
-                    }
-                    for c in new_hits
-                ],
-            },
-        )
+        post_webhook(cfg, {"event": "unread", "chats": new_hits})
     save_json(STATE, state)
     return state
 

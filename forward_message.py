@@ -32,7 +32,7 @@ import urllib.request
 
 import websockets
 
-from wa_cdp import resolve_cdp_http
+from wa_cdp import closing_chat, resolve_cdp_http
 
 CDP = resolve_cdp_http()
 
@@ -879,7 +879,7 @@ async def main(from_contact: str, needle: str, to_contact: str, do_search: bool)
     ws_url = pages[0]["webSocketDebuggerUrl"]
     same = same_contact(from_contact, to_contact)
 
-    async with websockets.connect(ws_url, max_size=None) as w:
+    async with websockets.connect(ws_url, max_size=None) as w, closing_chat(w):
         await call(w, 1, "Runtime.enable")
         mid = 10
 
