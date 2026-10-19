@@ -27,6 +27,7 @@ from pathlib import Path
 import websockets
 
 from wa_cdp import (
+    leave_neutral,
     open_contact,
     resolve_cdp_http,
     wa_ws_url,
@@ -674,50 +675,27 @@ async def main_async(contact: str, files: list[str], caption: str | None, allow_
     async with websockets.connect(wa_ws_url(), max_size=None) as ws:
         s = CdpSession(ws)
         s.start()
+        # CdpSession owns the socket reader, so wa_cdp.call/evaluate (open_contact
+        # and leave_neutral) must go through the session for the whole block.
+        import wa_cdp as W
+
+        async def call_adapt(w, mid, method, params=None):
+            return await s.call(method, params)
+
+        async def eval_adapt(w, mid, expr, await_promise=False):
+            return await s.evaluate(expr, await_promise)
+
+        orig = (W.call, W.evaluate)
+        W.call = call_adapt
+        W.evaluate = eval_adapt
         try:
             await s.call("Runtime.enable")
             await s.call("Page.enable")
             await s.call("DOM.enable")
 
-            # Bridge open_contact which uses raw mid-based API — use a side connection? 
-            # Simpler: implement open via importing with a thin adapter.
-            # open_contact expects (w, mid, ...) with call/evaluate that match wa_cdp signatures.
-            # We'll open using a short-lived raw mid path on same socket carefully:
-            # Actually CdpSession owns the reader — can't share. Reimplement open using s.
-
-            # Use wa_cdp.open_contact by temporarily using its evaluate/call against our session:
-            mid_holder = {"mid": 1}
-
-            async def call_adapt(w, mid, method, params=None):
-                # ignore mid; use session
-                return await s.call(method, params)
-
-            async def eval_adapt(w, mid, expr, await_promise=False):
-                return await s.evaluate(expr, await_promise)
-
-            async def mouse_adapt(w, mid0, x, y, button="left", click_count=1):
-                await s.mouse(x, y, button=button, click_count=click_count)
-
-            async def key_adapt(w, mid, name, code, vk):
-                await s.key(name, code, vk)
-
-            # Monkeypatch wa_cdp functions used by open_contact for this process
-            import wa_cdp as W
-
-            orig = (W.call, W.evaluate, W.mouse, W.key)
-            W.call = call_adapt
-            W.evaluate = eval_adapt
-            W.mouse = mouse_adapt
-            W.key = key_adapt
-            try:
-                # open_contact increments mid but we ignore it
-                _mid, title = await open_contact(
-                    ws, 10, contact, allow_substring=allow_substring, via_search_if_missing=do_search
-                )
-            finally:
-                W.call, W.evaluate, W.mouse, W.key = orig
-
-            # Do NOT Escape here — Escape closes #main / loses the open chat.
+            _mid, title = await open_contact(
+                ws, 10, contact, allow_substring=allow_substring, via_search_if_missing=do_search
+            )
 
             prior = await clear_compose(s)
             if prior and prior.get("text"):
@@ -866,6 +844,13 @@ async def main_async(contact: str, files: list[str], caption: str | None, allow_
             stamp_gate_sent(contact, _preview, title)
             print(json.dumps(out, ensure_ascii=False))
         finally:
+            # Patch still routes wa_cdp through CdpSession; close the chat before
+            # dropping it so a reply can raise an unread badge.
+            try:
+                await leave_neutral(ws, 8000)
+            except Exception:
+                pass
+            W.call, W.evaluate = orig
             await s.close()
 
 

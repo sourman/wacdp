@@ -22,6 +22,7 @@ import websockets
 from wa_cdp import (
     call,
     clear_search,
+    closing_chat,
     digits_only,
     escape_ui,
     evaluate,
@@ -265,7 +266,7 @@ async def main(contact: str, allow_substring: bool, allow_group: bool, dry_run: 
     except Exception as e:
         die(str(e))
 
-    async with websockets.connect(ws_url, max_size=None) as w:
+    async with websockets.connect(ws_url, max_size=None) as w, closing_chat(w):
         await call(w, 1, "Runtime.enable")
         mid = 10
         title = None

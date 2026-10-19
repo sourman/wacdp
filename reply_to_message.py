@@ -24,7 +24,7 @@ import urllib.request
 
 import websockets
 
-from wa_cdp import resolve_cdp_http
+from wa_cdp import closing_chat, resolve_cdp_http
 
 CDP = resolve_cdp_http()
 
@@ -457,7 +457,7 @@ async def main(contact: str, needle: str, text: str, do_search: bool):
         die("no whatsapp page on CDP")
     ws_url = pages[0]["webSocketDebuggerUrl"]
 
-    async with websockets.connect(ws_url, max_size=None) as w:
+    async with websockets.connect(ws_url, max_size=None) as w, closing_chat(w):
         await call(w, 1, "Runtime.enable")
         mid = 10
 

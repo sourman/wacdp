@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import urllib.request
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import websockets
@@ -285,6 +286,78 @@ async def escape_ui(w, mid, times=3):
         mid += 2
         await asyncio.sleep(0.15)
     return mid
+
+
+# Open conversation vs the empty "#main" splash. Header title covers the info
+# panel (compose hidden); compose covers a normal open chat.
+_NEUTRAL_JS = r"""(() => {
+  const compose = !!document.querySelector('#main footer div[contenteditable="true"]');
+  const header = !!document.querySelector('#main header span[title]');
+  const dialog = !!document.querySelector(
+    '[role="dialog"], [role="menu"], [data-testid="confirm-popup"]'
+  );
+  const searchEl = document.querySelector('input[aria-label="Search or start a new chat"]')
+    || [...document.querySelectorAll('input')].find(i => /search/i.test(i.getAttribute('aria-label')||''))
+    || document.querySelector('#side input[role="textbox"]');
+  const search = !!(searchEl && (searchEl.value || ''));
+  let back = null;
+  const backEl = [...document.querySelectorAll('#main header [aria-label]')]
+    .find(e => /^back$/i.test((e.getAttribute('aria-label') || '').trim()));
+  if (backEl) {
+    const r = backEl.getBoundingClientRect();
+    if (r.width >= 8 && r.height >= 8)
+      back = {x: r.x + r.width / 2, y: r.y + r.height / 2};
+  }
+  return {open: compose || header, compose, dialog, search, back};
+})()"""
+
+
+async def leave_neutral(w, mid, attempts: int = 6):
+    """Dismiss menus, search, and any open chat. Return the next CDP id.
+
+    WhatsApp Web marks new messages read while a chat stays open, so the
+    listener never sees an unread badge. Verb scripts call this on the way
+    out, including when they fail. Idempotent when nothing is open.
+    Escape closes a desktop chat; a header Back control covers the narrow layout.
+    """
+    for _ in range(attempts):
+        state = await evaluate(w, mid, _NEUTRAL_JS)
+        mid += 1
+        if not isinstance(state, dict):
+            break
+        if not (state.get("open") or state.get("dialog") or state.get("search")):
+            break
+        # Narrow layout: Back leaves the conversation. If it is still open, fall
+        # through to Escape (desktop, or Back only popped an inner panel).
+        if (
+            state.get("open")
+            and not state.get("dialog")
+            and not state.get("search")
+            and state.get("back")
+        ):
+            back = state["back"]
+            await mouse(w, mid, back["x"], back["y"])
+            mid += 4
+            await asyncio.sleep(0.3)
+            state = await evaluate(w, mid, _NEUTRAL_JS)
+            mid += 1
+            if not isinstance(state, dict) or not (
+                state.get("open") or state.get("dialog") or state.get("search")
+            ):
+                break
+        mid = await escape_ui(w, mid, 1)
+    mid = await clear_search(w, mid)
+    return mid
+
+
+@asynccontextmanager
+async def closing_chat(w, mid: int = 8000):
+    """Leave no chat open when the block exits, including SystemExit from die()."""
+    try:
+        yield
+    finally:
+        with suppress(Exception):
+            await leave_neutral(w, mid)
 
 
 async def ensure_ready(w, mid):

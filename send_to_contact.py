@@ -13,6 +13,7 @@ Guarantees:
   - Prefer cell-frame-container click
   - After Enter: compose empty + bubble + no fail-container
   - Delivery: data-testid ticks OR svg title wds-ic-delivered / aria Sent|Delivered|Read
+  - On the way out (success or failure), no chat left open
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ from pathlib import Path
 
 import websockets
 
-from wa_cdp import resolve_cdp_http
+from wa_cdp import closing_chat, resolve_cdp_http
 
 CDP = resolve_cdp_http()
 
@@ -283,7 +284,7 @@ async def main(contact: str, text: str, allow_substring: bool, do_search: bool):
         die("no whatsapp page on CDP")
     ws_url = pages[0]["webSocketDebuggerUrl"]
 
-    async with websockets.connect(ws_url, max_size=None) as w:
+    async with websockets.connect(ws_url, max_size=None) as w, closing_chat(w):
         await call(w, 1, "Runtime.enable")
         mid = 10
 
