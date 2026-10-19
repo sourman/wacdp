@@ -42,7 +42,9 @@ def stamp_gate_sent(contact: str, text: str, resolved_title: str | None = None) 
     key = (resolved_title or contact or "").strip()
     if not key:
         return
-    preview = (text or "")[:80]
+    # Same cap as scrape_chat_list.py's preview slice, so stamped_outbound
+    # can exact-match the row the daemon sees.
+    preview = (text or "")[:280]
     now = time.time()
     try:
         data = {}

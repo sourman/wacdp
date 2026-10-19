@@ -154,25 +154,11 @@ def post_webhook(cfg: dict, payload: dict) -> bool:
         return False
 
 
-_EMOJI_RE = re.compile(
-    "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0000FE0F\U0000200D\U0001F1E6-\U0001F1FF\U0000E000-\U0000F8FF]"
-)
-
-
-def norm_title(s: str) -> str:
-    """Emoji-stripped, whitespace-collapsed, casefolded title."""
-    return " ".join(_EMOJI_RE.sub("", s or "").split()).casefold()
-
-
 def is_denied(chat: dict, cfg: dict) -> bool:
-    """Exact match only: chat_id in denylist_ids, or whole normalized title in
-    denylist. No substring matching ("AF" must not hit "Afaf Mousa")."""
+    """True when chat_id is a key in denylist_ids. A missing id is not denied."""
     ids = cfg.get("denylist_ids") or {}
     cid = (chat.get("chat_id") or "").strip()
-    if cid and cid in ids:
-        return True
-    titles = {norm_title(x) for x in (cfg.get("denylist") or []) if norm_title(x)}
-    return norm_title(chat.get("who") or "") in titles
+    return bool(cid) and cid in ids
 
 
 def load_open_cases() -> dict:
@@ -245,11 +231,12 @@ def stamped_outbound(who: str, preview: str, now: float, gs: dict | None = None)
 _CLOCK_RE = re.compile(r"\d{1,2}:\d{2}")
 # "You: …", "You reacted …", "You deleted …" — not "You there?".
 _OWN_RE = re.compile(r"^\s*you\s*(?::|\breacted\b|\bdeleted\b)", re.IGNORECASE)
-# "Reacted ❤️ to …", "You reacted …", "<name> reacted ❤️ to …".
-# The name form requires "reacted <token> to" so a sentence like
-# "I reacted badly" is still an inbound message.
+# "Reacted ❤️ to …", "You reacted …", "<one-word name> reacted ❤️ to …".
+# The name is a single token and the next token must contain a non-word
+# character (the emoji). Sentences such as "I reacted well to that" and
+# "Hey I reacted 👍 to your idea" stay inbound messages.
 _REACTION_RE = re.compile(
-    r"^\s*(?:you\s+)?reacted\b|^\s*[^:\n]{1,60}?\sreacted\s+\S+\s+to\b",
+    r"^\s*(?:you\s+)?reacted\b|^\s*\S+\s+reacted\s+\S*\W\S*\s+to\b",
     re.IGNORECASE,
 )
 _TICK_RE = re.compile(
@@ -291,28 +278,34 @@ def _unread_count(chat: dict) -> int:
 
 
 def chat_snapshot(chat: dict) -> dict:
-    """Comparable list-row state. Preview/time are whitespace-normalized."""
+    """Comparable list-row state. Preview/time/sender are whitespace-normalized.
+
+    Group rows set sender. 1:1 rows leave it empty.
+    """
     return {
         "preview": norm_ws(str(chat.get("preview") or "")),
         "time": norm_ws(str(chat.get("time") or "")),
+        "sender": norm_ws(str(chat.get("sender") or "")),
         "from_me": bool(chat.get("from_me")),
         "is_reaction": bool(chat.get("is_reaction")),
         "unread": _unread_count(chat),
     }
 
 
-def inbound_read_activity(prev: dict | None, chat: dict) -> bool:
+def inbound_read_activity(prev: dict | None, chat: dict, suppress_reactions: bool = False) -> bool:
     """Inbound list change that may have no unread badge.
 
     The first time a chat is seen, prev is missing and this is False (seed
-    the baseline, do not replay history). Own sends and reactions are False.
-    A changed non-empty preview counts. The same preview with a new clock
-    time counts (another copy of the same text). A roll from a clock to
-    "Yesterday" or a weekday does not.
+    the baseline, do not replay history). Own sends are False. Reactions are
+    False only when suppress_reactions is set. A changed non-empty preview
+    counts. The same preview with a new clock time counts (another copy of
+    the same text). A roll from a clock to "Yesterday" or a weekday does not.
+    The same preview and clock with a different sender counts (another person
+    in a group, same minute).
     """
     if not isinstance(prev, dict) or not isinstance(chat, dict):
         return False
-    if is_own_activity(chat) or is_reaction_activity(chat):
+    if is_own_activity(chat) or (suppress_reactions and is_reaction_activity(chat)):
         return False
     cur = chat_snapshot(chat)
     prev_preview = norm_ws(str(prev.get("preview") or ""))
@@ -320,6 +313,9 @@ def inbound_read_activity(prev: dict | None, chat: dict) -> bool:
         return True
     prev_time = norm_ws(str(prev.get("time") or ""))
     if cur["preview"] and cur["time"] and cur["time"] != prev_time and is_clock_time(cur["time"]):
+        return True
+    prev_sender = norm_ws(str(prev.get("sender") or ""))
+    if cur["preview"] and cur["sender"] != prev_sender:
         return True
     return False
 
@@ -346,11 +342,15 @@ def diff_incoming(
 ) -> list:
     """Update state['seen'] / state['baseline'] and return unread payloads.
 
-    ``badge``: unmuted, not denied, not a reaction, unread > 0, fingerprint changed.
+    ``badge``: unmuted, not denied, unread > 0, fingerprint changed. Reactions
+    count unless cfg["suppress_reactions"] is true.
     ``preview``: unread is 0, but inbound_read_activity against the saved row.
-    A preview *text* change that exactly matches a live gate_sent stamp is the
-    user's own send (status ticks can lag one poll) and is not alerted. A later
-    message with that same text still alerts via a clock-time change.
+    A preview that exactly matches a live gate_sent stamp (after whitespace
+    normalization) is the user's own send. Status ticks can lag one poll, so
+    that match is consulted both when the preview text changes and when only
+    the clock moves on a row that is not from_me yet. A later message that
+    merely starts with the stamp is not an exact match, so it alerts. The
+    same text on a new clock after a from_me baseline alerts.
 
     Does not post the webhook. ``reason`` is the only field added to each chat.
     """
@@ -360,6 +360,7 @@ def diff_incoming(
         gate_sent = load_json(GATE_SENT, {})
     if not isinstance(gate_sent, dict):
         gate_sent = {}
+    suppress_reactions = bool(cfg.get("suppress_reactions"))
 
     hits: list = []
     seen = state.setdefault("seen", {})
@@ -382,15 +383,30 @@ def diff_incoming(
         unread = snap["unread"]
         reason = None
         if not c.get("muted") and not is_denied(c, cfg):
-            if unread > 0 and not is_reaction_activity(c):
+            if unread > 0 and not (suppress_reactions and is_reaction_activity(c)):
                 fp = fingerprint(c)
                 if seen.get(who) != fp:
                     reason = "badge"
                     seen[who] = fp
-            elif unread <= 0 and inbound_read_activity(prev, c):
+            elif unread <= 0 and inbound_read_activity(prev, c, suppress_reactions):
                 prev_preview = norm_ws(str((prev or {}).get("preview") or ""))
+                prev_time = norm_ws(str((prev or {}).get("time") or ""))
+                prev_sender = norm_ws(str((prev or {}).get("sender") or ""))
                 text_changed = snap["preview"] != prev_preview
-                if not (text_changed and stamped_outbound(who, snap["preview"], now, gate_sent)):
+                clock_only = (not text_changed) and snap["time"] != prev_time
+                sender_only = (
+                    snap["sender"] != prev_sender and not text_changed and snap["time"] == prev_time
+                )
+                own = stamped_outbound(who, snap["preview"], now, gate_sent)
+                # Exact stamp match is our send while ticks lag. A prefix of
+                # the stamp is not exact, so it alerts. Sender-only (same
+                # preview and clock) is someone else and alerts even then.
+                clock_is_ours = (
+                    clock_only
+                    and snap["sender"] == prev_sender
+                    and not (prev or {}).get("from_me")
+                )
+                if sender_only or not (own and (text_changed or clock_is_ours)):
                     reason = "preview"
         if unread == 0:
             seen.pop(who, None)

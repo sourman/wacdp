@@ -2,5 +2,5 @@
   "webhook_url": "https://api2.cursor.sh/automations/webhook/PASTE_ID",
   "webhook_key": "PASTE_FROM_SECRET_NOT_CHAT",
   "denylist_ids": {"120363000000000000@g.us": "Example group label"},
-  "denylist": []
+  "suppress_reactions": false
 }
