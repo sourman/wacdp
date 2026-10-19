@@ -20,7 +20,7 @@ Scripts talk to an already-logged-in Chromium (URL from `WA_CDP_HTTP`, else `cdp
 | `forward_message.py` | Forward a bubble to another chat |
 | `react_to_message.py` | React with emoji |
 | `wa_cdp.py` | Shared CDP primitives (`leave_neutral` / `closing_chat`) |
-| `daemon.py` + `ensure.sh` / `supervise.sh` | Unmuted unread poll → webhook. Denylist is exact: `denylist_ids` (chat JID from scrape `chat_id`) or whole normalized titles; no substring match |
+| `daemon.py` + `ensure.sh` / `supervise.sh` | Unmuted unread poll → webhook. Denylist is `denylist_ids` only: exact chat JID from scrape `chat_id`. The old title `denylist` is ignored |
 
 Copy `config.json.example` → `config.json` locally. **Never commit webhook secrets.**
 
@@ -43,21 +43,21 @@ WhatsApp Web marks an incoming message read as soon as that chat is on screen, s
 
 ## Daemon alerts
 
-`daemon.py` polls the chat list (default every 20s, `WA_LISTEN_INTERVAL`) and POSTs JSON. Event names are unchanged: `unread`, `outbound`, `wedge`, `daemon_down`. `config.json` is unchanged.
+`daemon.py` polls the chat list (default every 20s, `WA_LISTEN_INTERVAL`) and POSTs JSON. Event names are unchanged: `unread`, `outbound`, `wedge`, `daemon_down`. Set `suppress_reactions` to true to skip reaction rows; it defaults to false, so a missing key still alerts.
 
 `unread` chat objects keep `who`, `chat_id`, `sender`, `preview`, `unread`, `muted`, and add:
 
 | `reason` | When |
 |---|---|
-| `badge` | `unread` > 0, the row is not a reaction, and this who/unread/preview fingerprint is new |
-| `preview` | `unread` is 0, but since the last poll the preview changed, or the clock time changed while the preview stayed the same. The row is not the user's (`from_me`, a `You:` / `You reacted` / `You deleted` preview, or an outbound status icon) and not a reaction (`is_reaction`, or an English `Reacted …` / `<name> reacted … to …` preview). |
+| `badge` | `unread` > 0 and this who/unread/preview fingerprint is new. A reaction row counts unless `suppress_reactions` is true |
+| `preview` | `unread` is 0, but since the last poll the preview changed, the clock time changed while the preview stayed the same, or the sender changed while the preview and clock stayed the same (group rows; 1:1 sender stays empty). The row is not the user's (`from_me`, a `You:` / `You reacted` / `You deleted` preview, or an outbound status icon). With `suppress_reactions` true, a reaction row is skipped (`is_reaction`, or an English `Reacted …` / `<name> reacted … to …` preview). |
 
 `unread` may be `0` when `reason` is `preview`. That is the open-chat case: a reply was auto-marked read, so there is no badge, but the list row still moved.
 
 Not alerted:
 
-- The user's own sends, including a preview that exactly matches a live `gate_sent.json` stamp (script sends record one for about 120s). A later message whose text equals that stamp still alerts, because the clock time changed.
-- Reactions.
+- The user's own sends, including a preview that exactly matches a live `gate_sent.json` stamp (script sends record the same 280-character preview the scraper stores, for about 120s). The match is exact after whitespace normalization, and it is checked both when the preview text changes and when only the clock moves before the row is `from_me`. A later message that merely starts with the stamp still alerts. The same text on a new clock after a `from_me` baseline alerts.
+- Reactions, only when `suppress_reactions` is true. The default is to alert. The user's own `You reacted` row is still their own send.
 - The same row on the next poll (state keeps a per-chat baseline and the badge fingerprint).
 - Muted chats and denylisted chats.
 - A chat the daemon has never baselined. The first poll records it and does not replay history. A day-label roll (`1:00 PM` → `Yesterday`) is not a new message.

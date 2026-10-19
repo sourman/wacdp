@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 import daemon
+import send_media_to_contact
+import send_to_contact
 
 
 def chat(**kw):
@@ -40,7 +42,10 @@ class Activity(unittest.TestCase):
         self.assertTrue(daemon.is_reaction_activity(chat(is_reaction=True, preview="❤️")))
         self.assertTrue(daemon.is_reaction_activity(chat(preview='Reacted ❤️ to "hi"')))
         self.assertTrue(daemon.is_reaction_activity(chat(preview="Alice reacted 👍 to hi")))
+        self.assertTrue(daemon.is_reaction_activity(chat(preview="You reacted")))
         self.assertFalse(daemon.is_reaction_activity(chat(preview="I reacted badly")))
+        self.assertFalse(daemon.is_reaction_activity(chat(preview="I reacted well to that")))
+        self.assertFalse(daemon.is_reaction_activity(chat(preview="Hey I reacted 👍 to your idea")))
 
     def test_clock_vs_day_label(self):
         self.assertTrue(daemon.is_clock_time("1:02 PM"))
@@ -118,20 +123,34 @@ class DiffIncoming(unittest.TestCase):
             [],
         )
 
-    def test_reaction_rows_do_not_alert_even_with_a_badge(self):
+    def test_reaction_rows_alert_unless_suppressed(self):
         state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello", from_me=True))}}
         reacted = chat(preview='Reacted ❤️ to "Hello"', unread=0, is_reaction=True)
-        self.assertEqual(self.diff(state, [reacted]), [])
-        # badge + reaction preview still not an alert, and does not stick in seen
+        hits = self.diff(state, [reacted])
+        self.assertEqual([h["reason"] for h in hits], ["preview"])
         state = {"seen": {}}
         badge = chat(preview="Alice reacted 👍 to hi", unread=1, time="1:03 PM")
-        self.assertEqual(self.diff(state, [badge]), [])
+        hits = self.diff(state, [badge])
+        self.assertEqual([h["reason"] for h in hits], ["badge"])
+        self.assertIn("Ada", state["seen"])
+
+        cfg = {**self.cfg, "suppress_reactions": True}
+        state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello", from_me=True))}}
+        self.assertEqual(self.diff(state, [reacted], cfg=cfg), [])
+        state = {"seen": {}}
+        self.assertEqual(self.diff(state, [badge], cfg=cfg), [])
         self.assertNotIn("Ada", state["seen"])
 
     def test_sentence_containing_reacted_still_alerts(self):
         state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello"))}}
         hits = self.diff(state, [chat(preview="I reacted badly", time="1:05 PM", unread=0)])
         self.assertEqual([h["preview"] for h in hits], ["I reacted badly"])
+        state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello"))}}
+        hits = self.diff(state, [chat(preview="I reacted well to that", time="1:06 PM", unread=0)])
+        self.assertEqual([h["preview"] for h in hits], ["I reacted well to that"])
+        state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello"))}}
+        hits = self.diff(state, [chat(preview="Hey I reacted 👍 to your idea", time="1:07 PM", unread=0)])
+        self.assertEqual([h["preview"] for h in hits], ["Hey I reacted 👍 to your idea"])
 
     def test_gate_sent_hides_our_text_landing_not_a_later_reply(self):
         stamp = {"Ada": {"preview": "Hello", "until": 1_700_000_100}}
@@ -155,6 +174,51 @@ class DiffIncoming(unittest.TestCase):
             gate_sent=stamp,
         )
         self.assertEqual([h["reason"] for h in hits], ["preview"])
+
+    def test_long_stamp_and_clock_only_path(self):
+        body = "m" * 200
+        self.assertGreater(len(body), 80)
+        stamp = {"Ada": {"preview": body, "until": 1_700_000_100}}
+        state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="old", time="1:00 PM"))}}
+        landed = chat(preview=body, time="1:00 PM", from_me=False, unread=0)
+        self.assertEqual(self.diff(state, [landed], gate_sent=stamp), [])
+        # clock catches up before from_me; still the stamped send
+        caught = chat(preview=body, time="1:01 PM", from_me=False, unread=0)
+        self.assertEqual(self.diff(state, [caught], gate_sent=stamp), [])
+        # a later message that only starts with the stamp still alerts
+        hits = self.diff(
+            state,
+            [chat(preview=body + " tail", time="1:02 PM", from_me=False, unread=0)],
+            gate_sent=stamp,
+        )
+        self.assertEqual([h["reason"] for h in hits], ["preview"])
+
+    def test_clock_only_prefix_of_stamp_still_alerts(self):
+        stamp = {"Ada": {"preview": "Hello", "until": 1_700_000_100}}
+        state = {
+            "seen": {},
+            "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello there", time="1:00 PM", from_me=False))},
+        }
+        hits = self.diff(
+            state,
+            [chat(preview="Hello there", time="1:02 PM", from_me=False, unread=0)],
+            gate_sent=stamp,
+        )
+        self.assertEqual([h["preview"] for h in hits], ["Hello there"])
+
+    def test_sender_change_same_text_same_minute_alerts_once(self):
+        base = chat(who="Group", preview="same text", time="1:00 PM", sender="Bob", chat_id="9@g.us")
+        state = {"seen": {}, "baseline": {"Group": daemon.chat_snapshot(base)}}
+        nxt = chat(who="Group", preview="same text", time="1:00 PM", sender="Cara", chat_id="9@g.us", unread=0)
+        hits = self.diff(state, [nxt])
+        self.assertEqual([h["reason"] for h in hits], ["preview"])
+        self.assertEqual(hits[0]["sender"], "Cara")
+        self.assertEqual(state["baseline"]["Group"]["sender"], "Cara")
+        self.assertEqual(self.diff(state, [nxt]), [])
+        # 1:1 rows leave sender empty, so the same snapshot does not alert
+        state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="hi", time="1:00 PM", sender=""))}}
+        self.assertEqual(daemon.chat_snapshot(chat(sender=""))["sender"], "")
+        self.assertEqual(self.diff(state, [chat(preview="hi", time="1:00 PM", sender="")]), [])
 
     def test_whitespace_only_preview_change_is_ignored(self):
         state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="on my way", time="1:00 PM"))}}
@@ -197,7 +261,7 @@ class DiffIncoming(unittest.TestCase):
         hits = self.diff(state, [chat(preview="secret", unread=4, muted=False)])
         self.assertEqual([h["reason"] for h in hits], ["badge"])
 
-        cfg = {"denylist": ["Ada"], "denylist_ids": {}}
+        cfg = {"denylist": ["Ada"], "denylist_ids": {"111@c.us": "Ada"}}
         state = {"seen": {}, "baseline": {"Ada": daemon.chat_snapshot(chat(preview="old"))}}
         denied = chat(preview="new note", unread=0, time="2:00 PM")
         self.assertEqual(self.diff(state, [denied], cfg=cfg), [])
@@ -290,6 +354,26 @@ class GateSent(unittest.TestCase):
         self.assertTrue(daemon.stamped_outbound("Ada", "Hello", 10, gs))
         self.assertFalse(daemon.stamped_outbound("Ada", "Hello there", 10, gs))
         self.assertFalse(daemon.gate_sent_suppresses("Ada", "Hello", 50, gs))
+
+    def test_exact_match_collapses_whitespace(self):
+        gs = {"Ada": {"preview": "Hello   there", "until": 50}}
+        self.assertTrue(daemon.stamped_outbound("Ada", "Hello there", 10, gs))
+        self.assertFalse(daemon.stamped_outbound("Ada", "Hello there friend", 10, gs))
+
+    def test_stamp_stores_scrape_preview_cap(self):
+        body = "x" * 400
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            text_path = root / "text.json"
+            media_path = root / "media.json"
+            with mock.patch.object(send_to_contact, "GATE_SENT", text_path):
+                send_to_contact.stamp_gate_sent("Ada", body, "Ada")
+            with mock.patch.object(send_media_to_contact, "GATE_SENT", media_path):
+                send_media_to_contact.stamp_gate_sent("Ada", body, "Ada")
+            for path in (text_path, media_path):
+                stored = json.loads(path.read_text(encoding="utf-8"))["Ada"]["preview"]
+                self.assertEqual(stored, body[:280])
+                self.assertEqual(len(stored), 280)
 
 
 if __name__ == "__main__":

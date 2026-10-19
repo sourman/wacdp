@@ -218,7 +218,7 @@ async def header_ok(w, mid, contact: str):
             || dig.endsWith(phoneDigits.slice(-9)) || phoneDigits.endsWith(dig.slice(-9))
           );
           // WhatsApp sometimes renders group headers without the emoji in the
-          // title (e.g. "Aquabros" for "Aquabros 🩳🤿"), so compare
+          // title (e.g. "Group" for "Group 🩳🤿"), so compare
           // emoji-stripped forms too (exact only; a short header must not
           // pass for a longer requested name).
           const norm = s => (s || '').replace(/[\\u{{1F300}}-\\u{{1FAFF}}\\u{{2600}}-\\u{{27BF}}\\u{{FE0F}}\\u{{200D}}]/gu, '').replace(/\\s+/g, ' ').trim();

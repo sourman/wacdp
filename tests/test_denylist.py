@@ -6,23 +6,18 @@ import daemon
 
 
 class Denylist(unittest.TestCase):
-    cfg = {"denylist_ids": {"111@g.us": "AF"}, "denylist": ["Aquabros", "Famillia"]}
+    cfg = {"denylist_ids": {"111@g.us": "group label"}, "denylist": ["ignored title"]}
 
     def d(self, who, cid=""):
         return daemon.is_denied({"who": who, "chat_id": cid}, self.cfg)
 
     def test_id_exact(self):
         self.assertTrue(self.d("renamed group", "111@g.us"))
-        self.assertFalse(self.d("AF", "222@g.us"))  # same title, different chat id: not denied via id
+        self.assertFalse(self.d("group label", "222@g.us"))
+        self.assertFalse(self.d("no id", ""))
 
-    def test_no_substring(self):
-        for who in ["Afaf Mousa", "Safwat Prime", "Hafez Library", "A", "Aqua"]:
-            self.assertFalse(self.d(who, "9@lid"), who)
-
-    def test_title_normalized(self):
-        self.assertTrue(self.d("Aquabros \U0001fa73\U0001f93f"))
-        self.assertTrue(self.d("Famillia \ue415"))
-        self.assertTrue(self.d("  aquabros "))
+    def test_title_list_is_ignored(self):
+        self.assertFalse(self.d("ignored title", "9@lid"))
 
 
 if __name__ == "__main__":
