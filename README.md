@@ -63,3 +63,7 @@ Not alerted:
 - A chat the daemon has never baselined. The first poll records it and does not replay history. A day-label roll (`1:00 PM` → `Yesterday`) is not a new message.
 
 Restart the daemon (or `supervise.sh`) after upgrading. The new poll loop and the baseline in `state.json` load only on process start. The first poll after a restart with an empty baseline only seeds state; badge unreads still alert immediately.
+
+## read_chat.py (full text, read only)
+
+`python3 read_chat.py --contact 'Exact Title' --since 10/25/2026` (or `--last 40`) opens the chat, scrolls up through the virtualized list, clicks every "Read more" until none remain, and prints JSON messages with `direction`, `sender`, `time`, `date`, full `text`, and `media` notes (image, voice, document name). It never types or sends. `--close` closes the chat afterwards. WhatsApp folds long messages, and preview scrapes only see the first ~700 chars, so use this whenever you need the whole text of a message.
