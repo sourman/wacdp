@@ -82,8 +82,21 @@ SCRAPE_JS = r"""
       || /muted/i.test(el.getAttribute('aria-label') || '')
     );
     const lines = (el.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
-    const body = lines.filter(x =>
-      x !== who && !/^\d+$/.test(x) && !/^\d+ unread/i.test(x) && !/^muted$/i.test(x)
+    // Clock or day label. A bare "Yesterday" / "Monday" / "1:00 PM" is the row's
+    // time, including when WhatsApp places it after the preview (or it is the
+    // only extra line because the preview is empty). It must not become preview.
+    const isTimeToken = (x) => /^(?:\d{1,2}:\d{2}(?:\s*[AP]M)?|Yesterday|Today|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|\d{1,2}\/\d{1,2}\/\d{2,4})$/i.test(x);
+    let timeIdx = -1;
+    if (lines.length > 1 && lines[1] !== who && isTimeToken(lines[1])) {
+      timeIdx = 1;
+    } else {
+      for (let ti = lines.length - 1; ti >= 1; ti--) {
+        if (lines[ti] !== who && isTimeToken(lines[ti])) { timeIdx = ti; break; }
+      }
+    }
+    const time = timeIdx >= 0 ? lines[timeIdx] : (lines.length > 1 ? lines[1] : '');
+    const body = lines.filter((x, i) =>
+      i !== timeIdx && x !== who && !/^\d+$/.test(x) && !/^\d+ unread/i.test(x) && !/^muted$/i.test(x)
       && !/^\(You\)$/i.test(x)
     );
     // Group rows render as "<sender> : <message>"; the line before a lone ":" is the sender.
@@ -96,7 +109,6 @@ SCRAPE_JS = r"""
       const rest = body.slice(ci + 1).join(' ').trim();
       if (rest) preview = rest.slice(0, 280);
     }
-    const time = lines.length > 1 ? lines[1] : '';
     // Attribution: chat-list preview is last activity, often Ahmed's outbound.
     const selfRow = !!(el.querySelector('[data-testid="message-yourself-row"], [data-testid="you-label"]'));
     const status = el.querySelector('[data-testid="last-msg-status"]');

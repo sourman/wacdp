@@ -1,0 +1,142 @@
+{
+  "ahmed": {
+    "id": "201092600692@c.us",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Ahmed other",
+      "phoneNumber": {"_serialized": "201092600692@c.us"}
+    }
+  },
+  "group": {
+    "id": "120363000000009225@g.us",
+    "is_group": true,
+    "contact": null
+  },
+  "business": {
+    "id": "444000000000001@lid",
+    "contact": {
+      "isAddressBookContact": 0,
+      "isBusiness": true,
+      "verifiedName": "Mountain View Resale"
+    }
+  },
+  "phone": {
+    "id": "555000000000001@lid",
+    "contact": {
+      "isAddressBookContact": 0,
+      "isBusiness": false
+    }
+  },
+  "saved": {
+    "id": "333000000000001@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Saved Friend"
+    }
+  },
+  "denied": {
+    "id": "999000000000001@lid",
+    "contact": {
+      "isAddressBookContact": 0,
+      "isBusiness": false
+    }
+  },
+  "random-group": {
+    "id": "777000000000001@g.us",
+    "is_group": true,
+    "contact": null
+  },
+  "named-quiet": {
+    "id": "666000000000001@lid",
+    "contact": null
+  },
+  "empty-yesterday": {
+    "id": "201000000000001@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Empty Yesterday"
+    }
+  },
+  "swapped": {
+    "id": "201000000000002@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Swapped Clock"
+    }
+  },
+  "odd-photo": {
+    "id": "201000000000003@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Odd Photo"
+    }
+  },
+  "odd-emoji": {
+    "id": "201000000000004@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Odd Emoji"
+    }
+  },
+  "muted": {
+    "id": "201000000000005@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Muted Client"
+    }
+  },
+  "reaction": {
+    "id": "333000000000002@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Reaction Quiet"
+    }
+  },
+  "inferred": {
+    "id": "333000000000003@lid",
+    "contact": {
+      "name": "Inferred Saved",
+      "isBusiness": false
+    }
+  },
+  "day-word": {
+    "id": "333000000000004@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Day Word"
+    }
+  },
+  "own": {
+    "id": "201000000000006@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Own Baseline"
+    }
+  },
+  "tick": {
+    "id": "333000000000005@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Tick Quiet"
+    }
+  },
+  "scratch": {
+    "id": "201000000000099@lid",
+    "contact": {
+      "isAddressBookContact": 1,
+      "isBusiness": false,
+      "name": "Scratch Delete"
+    }
+  }
+}

@@ -13,3 +13,5 @@ open_cases.json
 gate_sent.json
 failed_posts.jsonl
 tests/__pycache__/
+.verify-evidence/
+.verify-run/

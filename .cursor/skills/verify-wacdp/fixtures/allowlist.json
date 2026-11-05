@@ -1,0 +1,16 @@
+{
+  "denylist_ids": {
+    "999000000000001@lid": "Denied Spam"
+  },
+  "client_allowlist": {
+    "201092600692@c.us": "+20 10 92600692",
+    "120363000000009225@g.us": "WhatsApp slack bridging",
+    "201000000000001@lid": "Empty Yesterday",
+    "201000000000002@lid": "Swapped Clock",
+    "201000000000003@lid": "Odd Photo",
+    "201000000000004@lid": "Odd Emoji",
+    "201000000000005@lid": "Muted Client",
+    "201000000000006@lid": "Own Baseline"
+  },
+  "suppress_reactions": false
+}

@@ -1,0 +1,165 @@
+{
+  "inbound_overrides": {
+    "ahmed": {
+      "preview": "On my way",
+      "time": "1:04 PM",
+      "unread": 0,
+      "from_me": false
+    }
+  },
+  "messages": {
+    "ahmed": [
+      {"dir": "in", "text": "fixture inbound needle"},
+      {"dir": "out", "text": "fixture outgoing needle"}
+    ],
+    "group": [
+      {"dir": "in", "text": "group needle"}
+    ]
+  },
+  "verbs_extra": [
+    {
+      "id": "scratch",
+      "who": "Scratch Delete",
+      "time": "5:40 PM",
+      "preview": "temporary row",
+      "unread": 0,
+      "messages": [{"dir": "in", "text": "scratch hello"}]
+    }
+  ],
+  "rows": [
+    {
+      "id": "ahmed",
+      "who": "+20 10 92600692",
+      "time": "1:00 PM",
+      "preview": "earlier",
+      "unread": 0
+    },
+    {
+      "id": "group",
+      "who": "WhatsApp slack bridging",
+      "time": "1:05 PM",
+      "sender": "Sam",
+      "preview": "bridge ping",
+      "unread": 2,
+      "group": true
+    },
+    {
+      "id": "business",
+      "who": "Mountain View Resale",
+      "time": "2:10 PM",
+      "preview": "New listing",
+      "unread": 3
+    },
+    {
+      "id": "phone",
+      "who": "+1 202 555 0147",
+      "time": "2:11 PM",
+      "preview": "Hello there",
+      "unread": 1
+    },
+    {
+      "id": "saved",
+      "who": "Saved Friend",
+      "time": "9:00 AM",
+      "preview": "hey",
+      "unread": 4
+    },
+    {
+      "id": "denied",
+      "who": "Denied Spam",
+      "time": "9:01 AM",
+      "preview": "buy now",
+      "unread": 5
+    },
+    {
+      "id": "random-group",
+      "who": "Random Group",
+      "time": "Tuesday",
+      "preview": "hello group",
+      "unread": 2,
+      "group": true
+    },
+    {
+      "id": "named-quiet",
+      "who": "Named Quiet",
+      "time": "9:02 AM",
+      "preview": "ping",
+      "unread": 1
+    },
+    {
+      "id": "empty-yesterday",
+      "who": "Empty Yesterday",
+      "time": "Yesterday",
+      "preview": "",
+      "unread": 1
+    },
+    {
+      "id": "swapped",
+      "who": "Swapped Clock",
+      "time": "Yesterday",
+      "time_after": true,
+      "preview": "See you at 5",
+      "unread": 1
+    },
+    {
+      "id": "odd-photo",
+      "who": "Odd Photo",
+      "time": "Monday",
+      "preview": "Photo",
+      "unread": 0
+    },
+    {
+      "id": "odd-emoji",
+      "who": "Odd Emoji",
+      "time": "3:11 PM",
+      "preview": "📷",
+      "unread": 0
+    },
+    {
+      "id": "muted",
+      "who": "Muted Client",
+      "time": "8:00 AM",
+      "preview": "secret",
+      "unread": 2,
+      "muted": true
+    },
+    {
+      "id": "reaction",
+      "who": "Reaction Quiet",
+      "time": "8:02 AM",
+      "preview": "Reacted ❤️ to \"hi\"",
+      "unread": 1,
+      "reaction": true
+    },
+    {
+      "id": "inferred",
+      "who": "Inferred Saved",
+      "time": "8:03 AM",
+      "preview": "lunch",
+      "unread": 1
+    },
+    {
+      "id": "day-word",
+      "who": "Day Word",
+      "time": "4:00 PM",
+      "preview": "Yesterday",
+      "unread": 0
+    },
+    {
+      "id": "own",
+      "who": "Own Baseline",
+      "time": "12:01 PM",
+      "preview": "You: sent earlier",
+      "unread": 0,
+      "from_me": "you"
+    },
+    {
+      "id": "tick",
+      "who": "Tick Quiet",
+      "time": "12:02 PM",
+      "preview": "delivered hello",
+      "unread": 0,
+      "from_me": "tick"
+    }
+  ]
+}

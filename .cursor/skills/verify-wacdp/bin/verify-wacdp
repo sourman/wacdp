@@ -1,0 +1,1197 @@
+#!/usr/bin/env python3
+"""Drive wacdp against a fixture CDP, or guard a live box-chrome session.
+
+Fixture mode never binds port 9225 and never reads config.json.
+Live mode only accepts Ahmed's other number and the group
+"WhatsApp slack bridging".
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[4]
+FIXTURES = SKILL_ROOT / "fixtures"
+HARNESS = SKILL_ROOT / "harness"
+LIVE_CDP = "http://127.0.0.1:9225"
+LIVE_PHONE_DIGITS = "201092600692"
+LIVE_PHONE = "+20 10 92600692"
+LIVE_GROUP = "WhatsApp slack bridging"
+FIXTURE_KEY = "fixture-not-a-secret"
+PRODUCT_FILES = (
+    "wa_cdp.py",
+    "scrape_chat_list.py",
+    "daemon.py",
+    "send_to_contact.py",
+    "archive_chat.py",
+    "reply_to_message.py",
+    "react_to_message.py",
+    "forward_message.py",
+    "delete_chat.py",
+    "delete_outgoing.py",
+)
+DRIVE_FEATURES = (
+    "wake",
+    "scrape",
+    "archive",
+    "send",
+    "reply",
+    "react",
+    "forward",
+    "delete",
+)
+
+WEBHOOK_PATH: Path | None = None
+
+
+def run_id() -> str:
+    return (os.environ.get("VERIFY_RUN_ID") or "default").strip() or "default"
+
+
+def scratch_for(rid: str) -> Path:
+    return Path("/tmp") / "verify-wacdp" / rid
+
+
+def evidence_for(rid: str) -> Path:
+    return REPO / ".verify-evidence" / rid
+
+
+def pointer_for(rid: str) -> Path:
+    return REPO / ".verify-run" / f"{rid}.json"
+
+
+def fail(msg: str, code: int = 1) -> None:
+    print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False), flush=True)
+    raise SystemExit(code)
+
+
+def read_json(path: Path, default=None):
+    if not path.exists():
+        return default
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def digits(value: str) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def is_live_phone(value: str) -> bool:
+    return digits(value) == LIVE_PHONE_DIGITS
+
+
+def is_live_target(value: str) -> bool:
+    return is_live_phone(value) or (value or "").strip() == LIVE_GROUP
+
+
+def port_free(port: int) -> bool:
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def pick_port(env_name: str, default: int) -> int:
+    raw = (os.environ.get(env_name) or "").strip()
+    if raw:
+        port = int(raw)
+        if port == 9225:
+            fail(f"{env_name} must not be 9225; that port is the live box-chrome CDP")
+        if not port_free(port):
+            fail(f"{env_name}={port} is already in use")
+        return port
+    for port in range(default, default + 20):
+        if port != 9225 and port_free(port):
+            return port
+    fail(f"no free port near {default}")
+    return default
+
+
+def require_websockets() -> None:
+    try:
+        import websockets  # noqa: F401
+    except ImportError:
+        fail("websockets is not installed; run python3 -m pip install --user websockets")
+
+
+def chrome_bin() -> str:
+    for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+        found = shutil.which(name)
+        if found:
+            return found
+    fail("google-chrome is not on PATH; fixture CDP cannot start")
+    return ""
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+
+
+def source_hashes() -> dict:
+    return {name: sha256(REPO / name) for name in PRODUCT_FILES}
+
+
+def load_run() -> dict | None:
+    return read_json(pointer_for(run_id()))
+
+
+def pid_alive(pid: int | None) -> bool:
+    if not pid or pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def kill_group(pid: int | None) -> None:
+    if not pid or pid <= 1 or not pid_alive(pid):
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            return
+    for _ in range(20):
+        if not pid_alive(pid):
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def http_ok(url: str, timeout: float = 3) -> tuple[bool, str]:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            body = resp.read(400).decode("utf-8", "replace")
+            return True, body
+    except Exception as exc:
+        return False, str(exc)
+
+
+def cdp_tabs(cdp: str) -> list:
+    with urllib.request.urlopen(cdp.rstrip("/") + "/json/list", timeout=5) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def fixture_page(tabs: list) -> dict | None:
+    pages = [
+        tab
+        for tab in tabs
+        if tab.get("type") == "page" and "whatsapp-fixture" in (tab.get("url") or "")
+    ]
+    return pages[0] if pages else None
+
+
+async def cdp_eval(ws_url: str, expression: str, navigate: str | None = None):
+    import websockets
+
+    async with websockets.connect(ws_url, max_size=None, open_timeout=10) as ws:
+        mid = 1
+        if navigate:
+            await ws.send(json.dumps({"id": mid, "method": "Page.enable", "params": {}}))
+            mid += 1
+            await ws.send(
+                json.dumps({"id": mid, "method": "Page.navigate", "params": {"url": navigate}})
+            )
+            mid += 1
+            deadline = time.time() + 10
+            while time.time() < deadline:
+                raw = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                if raw.get("id") in (1, 2):
+                    if raw.get("id") == 2:
+                        break
+        await ws.send(
+            json.dumps(
+                {
+                    "id": mid,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": expression, "returnByValue": True},
+                }
+            )
+        )
+        while True:
+            raw = json.loads(await asyncio.wait_for(ws.recv(), timeout=20))
+            if raw.get("id") == mid:
+                result = raw.get("result", {})
+                if result.get("exceptionDetails"):
+                    raise RuntimeError(str(result["exceptionDetails"])[:500])
+                return result.get("result", {}).get("value")
+
+
+def evaluate(run: dict, expression: str, navigate: str | None = None):
+    tabs = cdp_tabs(run["cdp"])
+    page = fixture_page(tabs)
+    if not page:
+        fail("fixture page missing from CDP")
+    return asyncio.run(cdp_eval(page["webSocketDebuggerUrl"], expression, navigate))
+
+
+def wait_ready(run: dict, phase: str, timeout: float = 20) -> dict:
+    expression = """(() => ({
+      fixture: document.documentElement.dataset.wacdpFixture || '',
+      phase: document.documentElement.dataset.phase || '',
+      ready: document.documentElement.dataset.ready || '',
+      pane: !!document.querySelector('#pane-side'),
+      titles: document.querySelectorAll('#pane-side span[title]').length,
+      error: document.body.dataset.error || ''
+    }))()"""
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        try:
+            last = evaluate(run, expression)
+        except Exception as exc:
+            last = {"error": str(exc)}
+        if (
+            isinstance(last, dict)
+            and last.get("fixture") == "1"
+            and last.get("ready") == "1"
+            and last.get("phase") == phase
+            and last.get("pane")
+            and (last.get("titles") or 0) >= 8
+        ):
+            return last
+        time.sleep(0.25)
+    fail(f"fixture not ready for phase {phase}: {last}")
+    return {}
+
+
+def navigate(run: dict, phase: str) -> dict:
+    url = f"{run['http']}/whatsapp-fixture/?phase={phase}"
+    evaluate(run, "1", navigate=url)
+    return wait_ready(run, phase)
+
+
+def script_env(run: dict) -> dict:
+    env = os.environ.copy()
+    env["WA_CDP_HTTP"] = run["cdp"]
+    env["WACDP_SYNTHETIC_CLICKS"] = "0"
+    env.pop("GATE_WA_WEBHOOK_KEY", None)
+    return env
+
+
+def reset_listener(run: dict) -> None:
+    app = Path(run["app"])
+    write_json(app / "state.json", {"seen": {}})
+    write_json(app / "gate_sent.json", {})
+    write_json(app / "open_cases.json", {"cases": {}})
+    Path(run["webhook"]).write_text("", encoding="utf-8")
+
+
+def webhook_posts(run: dict) -> list:
+    text = Path(run["webhook"]).read_text(encoding="utf-8")
+    posts = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            posts.append(json.loads(line))
+    return posts
+
+
+def run_tick(run: dict) -> subprocess.CompletedProcess:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import daemon; cfg=daemon.load_json(daemon.CONFIG, {}); "
+            "state=daemon.load_json(daemon.STATE, {'seen': {}}); daemon.tick(cfg, state)",
+        ],
+        cwd=run["app"],
+        env=script_env(run),
+        capture_output=True,
+        text=True,
+        timeout=50,
+    )
+    if proc.returncode != 0:
+        fail(f"daemon.tick failed ({proc.returncode}): {(proc.stderr or proc.stdout)[-800:]}")
+    return proc
+
+
+def run_product(run: dict, script: str, args: list[str], timeout: int = 90) -> subprocess.CompletedProcess:
+    proc = subprocess.run(
+        [sys.executable, str(Path(run["app"]) / script), *args],
+        cwd=run["app"],
+        env=script_env(run),
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    return proc
+
+
+def last_json(proc: subprocess.CompletedProcess) -> dict | None:
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def require_product(run: dict, script: str, args: list[str], timeout: int = 90) -> dict:
+    proc = run_product(run, script, args, timeout=timeout)
+    payload = last_json(proc)
+    if proc.returncode != 0 or not payload or not payload.get("ok"):
+        fail(
+            f"{script} failed exit={proc.returncode} payload={payload} "
+            f"stderr={(proc.stderr or '')[-500:]}"
+        )
+    return payload
+
+
+def scrape(run: dict) -> dict:
+    proc = run_product(run, "scrape_chat_list.py", [], timeout=45)
+    if proc.returncode != 0:
+        fail(f"scrape failed exit={proc.returncode} stdout={proc.stdout[-500:]} stderr={proc.stderr[-400:]}")
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        fail(f"scrape did not return JSON: {proc.stdout[:500]}")
+    if data.get("error"):
+        fail(f"scrape error: {data}")
+    return data
+
+
+def diffs(got: dict, expect: dict) -> list[str]:
+    out = []
+    for key, want in expect.items():
+        have = got.get(key)
+        if have != want:
+            out.append(f"{expect.get('who', '?')}.{key}: got {have!r} want {want!r}")
+    return out
+
+
+def assert_scrape(data: dict, oracle: dict) -> dict:
+    chats = data.get("chats") or []
+    by_who = {}
+    for chat in chats:
+        who = chat.get("who")
+        if who in by_who:
+            fail(f"duplicate scrape who {who!r}")
+        by_who[who] = chat
+    problems = []
+    expected_whos = []
+    for expect in oracle["scrape"]:
+        expected_whos.append(expect["who"])
+        got = by_who.get(expect["who"])
+        if got is None:
+            problems.append(f"missing {expect['who']}")
+            continue
+        problems.extend(diffs(got, expect))
+    extra = sorted(set(by_who) - set(expected_whos))
+    if extra:
+        problems.append("unexpected chats: " + ", ".join(extra))
+    if problems:
+        fail("scrape oracle mismatch: " + "; ".join(problems[:12]))
+    return by_who
+
+
+def assert_wake_post(post: dict, expected: list, quiet: list) -> None:
+    if post.get("event") != "unread":
+        fail(f"wake event {post.get('event')!r}")
+    chats = post.get("chats") or []
+    by_who = {chat.get("who"): chat for chat in chats}
+    problems = []
+    for expect in expected:
+        got = by_who.get(expect["who"])
+        if got is None:
+            problems.append(f"missing hit {expect['who']}")
+            continue
+        problems.extend(diffs(got, expect))
+    extras = sorted(set(by_who) - {item["who"] for item in expected})
+    if extras:
+        problems.append("unexpected hits: " + ", ".join(extras))
+    for who in quiet:
+        if who in by_who:
+            problems.append(f"quiet chat woke: {who}")
+    if problems:
+        fail("wake oracle mismatch: " + "; ".join(problems[:12]))
+
+
+def copy_product(app: Path) -> None:
+    app.mkdir(parents=True, exist_ok=True)
+    for name in PRODUCT_FILES:
+        shutil.copy2(REPO / name, app / name)
+
+
+def write_fixture_config(app: Path, http_port: int, cdp_port: int) -> None:
+    cfg = read_json(FIXTURES / "allowlist.json")
+    cfg["webhook_url"] = f"http://127.0.0.1:{http_port}/webhook"
+    cfg["webhook_key"] = FIXTURE_KEY
+    cfg["cdp_http"] = f"http://127.0.0.1:{cdp_port}"
+    write_json(app / "config.json", cfg)
+    write_json(app / "state.json", {"seen": {}})
+    write_json(app / "gate_sent.json", {})
+    write_json(app / "open_cases.json", {"cases": {}})
+
+
+def source_matches(run: dict) -> bool:
+    app = Path(run["app"])
+    current = source_hashes()
+    return all((app / name).exists() and sha256(app / name) == digest for name, digest in current.items())
+
+
+def doctor(live: bool = False) -> dict:
+    if live:
+        return doctor_live()
+    run = load_run()
+    if not run:
+        fail("no fixture run; start one with verify-wacdp launch")
+    problems = []
+    if not pid_alive(run.get("serve_pid")):
+        problems.append("fixture HTTP server is not running")
+    if not pid_alive(run.get("chrome_pid")):
+        problems.append("fixture Chrome is not running")
+    if run.get("cdp", "").rstrip("/").endswith(":9225"):
+        problems.append("fixture CDP is pointed at live port 9225")
+    ok, detail = http_ok(run["http"] + "/health")
+    if not ok:
+        problems.append(f"fixture HTTP health failed: {detail}")
+    page_url = ""
+    ready = None
+    try:
+        tabs = cdp_tabs(run["cdp"])
+        page = fixture_page(tabs)
+        if not page:
+            problems.append("CDP has no whatsapp-fixture page")
+        else:
+            page_url = page.get("url") or ""
+            ready = evaluate(
+                run,
+                """(() => ({
+                  fixture: document.documentElement.dataset.wacdpFixture || '',
+                  ready: document.documentElement.dataset.ready || '',
+                  pane: !!document.querySelector('#pane-side'),
+                  qr: /Scan.*?QR|Link with phone|Log into WhatsApp/i.test(document.body.innerText || '')
+                }))()""",
+            )
+            if not isinstance(ready, dict) or ready.get("fixture") != "1" or ready.get("ready") != "1":
+                problems.append(f"page is not a ready fixture: {ready}")
+            if isinstance(ready, dict) and (not ready.get("pane") or ready.get("qr")):
+                problems.append(f"chat list not usable: {ready}")
+    except Exception as exc:
+        problems.append(f"CDP check failed: {exc}")
+    if not source_matches(run):
+        problems.append("scratch copies differ from the repo; relaunch")
+    report = {
+        "ok": not problems,
+        "mode": "fixture",
+        "cdp": run.get("cdp"),
+        "http": run.get("http"),
+        "page": page_url,
+        "ready": ready,
+        "chrome_pid": run.get("chrome_pid"),
+        "serve_pid": run.get("serve_pid"),
+        "evidence_dir": run.get("evidence"),
+        "live_port_9225": "untouched",
+        "problems": problems,
+    }
+    print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+    if problems:
+        raise SystemExit(1)
+    return report
+
+
+def doctor_live() -> dict:
+    problems = []
+    page_url = ""
+    ready = None
+    try:
+        tabs = cdp_tabs(LIVE_CDP)
+    except Exception as exc:
+        fail(f"live CDP {LIVE_CDP} is not reachable: {exc}")
+    pages = [
+        tab
+        for tab in tabs
+        if tab.get("type") == "page" and "whatsapp" in (tab.get("url") or "").lower()
+    ]
+    if not pages:
+        problems.append("no WhatsApp page on :9225")
+    else:
+        page_url = pages[0].get("url") or ""
+        if "whatsapp-fixture" in page_url or "wacdp-fixture" in page_url:
+            problems.append("port 9225 is serving the fixture page, not box-chrome")
+        else:
+            try:
+                import websockets  # noqa: F401
+
+                ready = asyncio.run(
+                    cdp_eval(
+                        pages[0]["webSocketDebuggerUrl"],
+                        """(() => ({
+                          pane: !!document.querySelector('#pane-side'),
+                          qr: /Scan.*?QR|Link with phone|Log into WhatsApp/i.test((document.body && document.body.innerText) || '')
+                        }))()""",
+                    )
+                )
+            except Exception as exc:
+                problems.append(f"live evaluate failed: {exc}")
+            if isinstance(ready, dict) and (not ready.get("pane") or ready.get("qr")):
+                problems.append(f"WhatsApp Web is not logged in: {ready}")
+    report = {
+        "ok": not problems,
+        "mode": "live",
+        "cdp": LIVE_CDP,
+        "page": page_url,
+        "ready": ready,
+        "targets": [LIVE_PHONE, LIVE_GROUP],
+        "problems": problems,
+    }
+    print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+    if problems:
+        raise SystemExit(1)
+    return report
+
+
+def launch() -> None:
+    require_websockets()
+    existing = load_run()
+    if existing:
+        stop_processes(existing)
+    rid = run_id()
+    scratch = scratch_for(rid)
+    if scratch.exists():
+        shutil.rmtree(scratch)
+    evidence = evidence_for(rid)
+    evidence.mkdir(parents=True, exist_ok=True)
+    app = scratch / "app"
+    copy_product(app)
+    http_port = pick_port("VERIFY_HTTP_PORT", 8766)
+    cdp_port = pick_port("VERIFY_CDP_PORT", 9335)
+    if http_port == cdp_port:
+        fail("HTTP and CDP ports collided")
+    write_fixture_config(app, http_port, cdp_port)
+    webhook = scratch / "webhook.jsonl"
+    webhook.write_text("", encoding="utf-8")
+    serve_log = scratch / "serve.log"
+    chrome_log = scratch / "chrome.log"
+    serve_log.parent.mkdir(parents=True, exist_ok=True)
+    serve = subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "_serve", "--scratch", str(scratch), "--port", str(http_port)],
+        start_new_session=True,
+        stdout=serve_log.open("w", encoding="utf-8"),
+        stderr=subprocess.STDOUT,
+    )
+    http = f"http://127.0.0.1:{http_port}"
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        ok, _detail = http_ok(http + "/health", timeout=1)
+        if ok:
+            break
+        if serve.poll() is not None:
+            fail(f"fixture HTTP server exited: {serve_log.read_text(encoding='utf-8')[-500:]}")
+        time.sleep(0.2)
+    else:
+        kill_group(serve.pid)
+        fail("fixture HTTP server did not become healthy")
+    profile = scratch / "profile"
+    url = f"{http}/whatsapp-fixture/?phase=baseline"
+    chrome = subprocess.Popen(
+        [
+            chrome_bin(),
+            "--headless=new",
+            "--no-sandbox",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            f"--remote-debugging-port={cdp_port}",
+            "--remote-allow-origins=*",
+            f"--user-data-dir={profile}",
+            "--window-size=1280,1100",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            url,
+        ],
+        start_new_session=True,
+        stdout=chrome_log.open("w", encoding="utf-8"),
+        stderr=subprocess.STDOUT,
+    )
+    run = {
+        "run_id": rid,
+        "scratch": str(scratch),
+        "app": str(app),
+        "evidence": str(evidence),
+        "webhook": str(webhook),
+        "cdp": f"http://127.0.0.1:{cdp_port}",
+        "http": http,
+        "chrome_pid": chrome.pid,
+        "serve_pid": serve.pid,
+        "hashes": source_hashes(),
+    }
+    pointer_for(rid).parent.mkdir(parents=True, exist_ok=True)
+    write_json(pointer_for(rid), run)
+    try:
+        ready = wait_ready(run, "baseline")
+    except SystemExit:
+        tail = chrome_log.read_text(encoding="utf-8")[-800:] if chrome_log.exists() else ""
+        stop_processes(run)
+        fail(f"Chrome fixture did not become ready. chrome log: {tail}")
+    if chrome.poll() is not None:
+        stop_processes(run)
+        fail(f"Chrome exited early: {chrome_log.read_text(encoding='utf-8')[-800:]}")
+    report = {
+        "ok": True,
+        "mode": "fixture",
+        "cdp": run["cdp"],
+        "http": run["http"],
+        "page": url,
+        "ready": ready,
+        "chrome_pid": chrome.pid,
+        "serve_pid": serve.pid,
+        "evidence_dir": str(evidence),
+        "live_port_9225": "untouched",
+    }
+    print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+
+
+def stop_processes(run: dict) -> None:
+    kill_group(run.get("chrome_pid"))
+    kill_group(run.get("serve_pid"))
+    app = Path(run.get("app") or "")
+    pidfile = app / "daemon.pid"
+    if pidfile.exists():
+        try:
+            kill_group(int(pidfile.read_text(encoding="utf-8").strip() or "0"))
+        except ValueError:
+            pass
+
+
+def cleanup() -> None:
+    run = load_run()
+    evidence = str(evidence_for(run_id()))
+    if run:
+        evidence = run.get("evidence") or evidence
+        stop_processes(run)
+        scratch = Path(run.get("scratch") or "")
+        if scratch.exists():
+            shutil.rmtree(scratch, ignore_errors=True)
+        pointer_for(run.get("run_id") or run_id()).unlink(missing_ok=True)
+    else:
+        pointer_for(run_id()).unlink(missing_ok=True)
+    print(json.dumps({"ok": True, "cleaned": True, "evidence_dir": evidence}, ensure_ascii=False), flush=True)
+
+
+def require_fixture() -> dict:
+    run = load_run()
+    if not run:
+        fail("no fixture run; verify-wacdp launch first")
+    if not pid_alive(run.get("serve_pid")) or not pid_alive(run.get("chrome_pid")):
+        fail("fixture process is down; doctor this run and relaunch")
+    if not source_matches(run):
+        fail("repo scripts changed since launch; relaunch before driving")
+    if run.get("cdp", "").endswith(":9225"):
+        fail("refusing to drive fixture mode against port 9225")
+    return run
+
+
+def save_evidence(run: dict, feature: str, payload: dict) -> Path:
+    dest = Path(run["evidence"]) / feature
+    dest.mkdir(parents=True, exist_ok=True)
+    write_json(dest / "result.json", payload)
+    return dest / "result.json"
+
+
+def drive_scrape(run: dict) -> dict:
+    navigate(run, "baseline")
+    data = scrape(run)
+    assert_scrape(data, read_json(FIXTURES / "oracle.json"))
+    evidence = save_evidence(run, "scrape", {"ok": True, "feature": "scrape", "scrape": data})
+    return {"ok": True, "feature": "scrape", "evidence": str(evidence), "chats": len(data.get("chats") or [])}
+
+
+def drive_wake(run: dict) -> dict:
+    oracle = read_json(FIXTURES / "oracle.json")
+    navigate(run, "baseline")
+    reset_listener(run)
+    run_tick(run)
+    posts = webhook_posts(run)
+    if len(posts) != 1:
+        fail(f"first poll posted {len(posts)} events, want 1: {posts[:2]}")
+    assert_wake_post(posts[0], oracle["wake_badges"], oracle["wake_quiet"])
+    state = read_json(Path(run["app"]) / "state.json", {})
+    baseline = state.get("baseline") or {}
+    missing_baseline = [who for who in oracle["wake_quiet"] if who not in baseline]
+    if missing_baseline:
+        fail("quiet chats were not baselined: " + ", ".join(missing_baseline))
+    run_tick(run)
+    again = webhook_posts(run)
+    if len(again) != 1:
+        fail(f"second poll of the same list posted again: {again[1:]}")
+    navigate(run, "inbound")
+    run_tick(run)
+    final = webhook_posts(run)
+    if len(final) != 2:
+        fail(f"inbound poll produced {len(final)} posts, want 2")
+    inbound = final[1]
+    if inbound.get("event") != "unread" or len(inbound.get("chats") or []) != 1:
+        fail(f"inbound post shape: {inbound}")
+    problems = diffs(inbound["chats"][0], oracle["wake_inbound"])
+    if problems:
+        fail("inbound wake mismatch: " + "; ".join(problems))
+    state = read_json(Path(run["app"]) / "state.json", {})
+    preview = ((state.get("baseline") or {}).get(LIVE_PHONE) or {}).get("preview")
+    if preview != "On my way":
+        fail(f"baseline preview after inbound poll is {preview!r}")
+    evidence = save_evidence(
+        run,
+        "wake",
+        {"ok": True, "feature": "wake", "posts": final, "baseline_preview": preview},
+    )
+    return {"ok": True, "feature": "wake", "evidence": str(evidence), "posts": len(final)}
+
+
+def page_state(run: dict) -> dict:
+    return evaluate(
+        run,
+        """(() => ({
+          open: !!document.querySelector('#main header span[title]'),
+          titles: [...document.querySelectorAll('#pane-side span[title]')].map(s => s.getAttribute('title'))
+        }))()""",
+    )
+
+
+def drive_archive(run: dict) -> dict:
+    navigate(run, "verbs")
+    checked = require_product(run, "archive_chat.py", ["--contact", LIVE_PHONE, "--check"])
+    if checked.get("state") != "main":
+        fail(f"phone chat did not start on the main list: {checked}")
+    archived = require_product(run, "archive_chat.py", ["--contact", LIVE_PHONE])
+    if archived.get("state") != "archived" or archived.get("action") != "archive":
+        fail(f"archive did not flip the menu: {archived}")
+    hidden = page_state(run)
+    if hidden.get("open"):
+        fail(f"archive left a chat open: {hidden}")
+    if LIVE_PHONE in (hidden.get("titles") or []):
+        fail("archived phone chat is still on the main list")
+    recheck = require_product(run, "archive_chat.py", ["--contact", LIVE_PHONE, "--check"])
+    if recheck.get("state") != "archived":
+        fail(f"re-check did not see archived: {recheck}")
+    restored = require_product(run, "archive_chat.py", ["--contact", LIVE_PHONE, "--unarchive"])
+    if restored.get("state") != "main":
+        fail(f"unarchive did not restore the main list: {restored}")
+    shown = page_state(run)
+    if shown.get("open") or LIVE_PHONE not in (shown.get("titles") or []):
+        fail(f"phone chat was not back on the closed main list: {shown}")
+    refused = run_product(run, "archive_chat.py", ["--contact", LIVE_GROUP])
+    payload = last_json(refused) or {}
+    if refused.returncode == 0 or "group" not in json.dumps(payload).lower():
+        fail(f"group archive was not refused: exit={refused.returncode} payload={payload}")
+    evidence = save_evidence(
+        run,
+        "archive",
+        {
+            "ok": True,
+            "feature": "archive",
+            "check": checked,
+            "archive": archived,
+            "recheck": recheck,
+            "unarchive": restored,
+            "group_refused": payload,
+            "list_after_unarchive": shown,
+        },
+    )
+    return {"ok": True, "feature": "archive", "evidence": str(evidence)}
+
+
+def assert_row(run: dict, who: str, **expect) -> dict:
+    data = scrape(run)
+    got = next((chat for chat in data.get("chats") or [] if chat.get("who") == who), None)
+    if got is None:
+        fail(f"scrape has no row {who!r} after the verb")
+    problems = diffs(got, {"who": who, **expect})
+    if problems:
+        fail("post-condition scrape mismatch: " + "; ".join(problems))
+    return got
+
+
+def gate_stamp(run: dict, who: str) -> dict:
+    data = read_json(Path(run["app"]) / "gate_sent.json", {})
+    entry = data.get(who) if isinstance(data, dict) else None
+    if not isinstance(entry, dict):
+        fail(f"gate_sent has no stamp for {who!r}")
+    return entry
+
+
+def drive_send(run: dict) -> dict:
+    navigate(run, "verbs")
+    repo_gate = REPO / "gate_sent.json"
+    before = repo_gate.stat().st_mtime if repo_gate.exists() else None
+    text = "fixture verify send"
+    sent = require_product(
+        run,
+        "send_to_contact.py",
+        ["--contact", LIVE_PHONE, "--text", text],
+        timeout=60,
+    )
+    if not sent.get("delivered_tick"):
+        fail(f"send reported no delivery tick: {sent}")
+    closed = page_state(run)
+    if closed.get("open"):
+        fail(f"send left a chat open: {closed}")
+    row = assert_row(run, LIVE_PHONE, preview=text, from_me=True, unread=0)
+    stamp = gate_stamp(run, LIVE_PHONE)
+    if stamp.get("preview") != text:
+        fail(f"gate_sent preview {stamp.get('preview')!r}")
+    after = repo_gate.stat().st_mtime if repo_gate.exists() else None
+    if before != after:
+        fail("send wrote the repo gate_sent.json; fixture stamps must stay in scratch")
+    evidence = save_evidence(run, "send", {"ok": True, "feature": "send", "send": sent, "row": row})
+    return {"ok": True, "feature": "send", "evidence": str(evidence)}
+
+
+def drive_reply(run: dict) -> dict:
+    navigate(run, "verbs")
+    text = "fixture verify reply"
+    replied = require_product(
+        run,
+        "reply_to_message.py",
+        ["--contact", LIVE_PHONE, "--needle", "fixture inbound needle", "--text", text],
+        timeout=70,
+    )
+    if not replied.get("has_quote") or not replied.get("delivered_tick"):
+        fail(f"reply was not quoted or not ticked: {replied}")
+    closed = page_state(run)
+    if closed.get("open"):
+        fail(f"reply left a chat open: {closed}")
+    row = assert_row(run, LIVE_PHONE, preview=text, from_me=True)
+    evidence = save_evidence(run, "reply", {"ok": True, "feature": "reply", "reply": replied, "row": row})
+    return {"ok": True, "feature": "reply", "evidence": str(evidence)}
+
+
+def drive_react(run: dict) -> dict:
+    navigate(run, "verbs")
+    reacted = require_product(
+        run,
+        "react_to_message.py",
+        ["--contact", LIVE_PHONE, "--needle", "fixture inbound needle", "--emoji", "👍"],
+        timeout=60,
+    )
+    if not (reacted.get("verify") or {}).get("ok"):
+        fail(f"reaction was not confirmed: {reacted}")
+    closed = page_state(run)
+    if closed.get("open"):
+        fail(f"react left a chat open: {closed}")
+    row = assert_row(run, LIVE_PHONE, is_reaction=True)
+    if "👍" not in (row.get("preview") or ""):
+        fail(f"chat-list preview lost the reaction emoji: {row}")
+    evidence = save_evidence(run, "react", {"ok": True, "feature": "react", "react": reacted, "row": row})
+    return {"ok": True, "feature": "react", "evidence": str(evidence)}
+
+
+def drive_forward(run: dict) -> dict:
+    navigate(run, "verbs")
+    forwarded = require_product(
+        run,
+        "forward_message.py",
+        [
+            "--from-contact",
+            LIVE_PHONE,
+            "--needle",
+            "fixture outgoing needle",
+            "--to-contact",
+            LIVE_GROUP,
+        ],
+        timeout=90,
+    )
+    if not forwarded.get("forwarded_indicator") or not forwarded.get("delivered_tick"):
+        fail(f"forward was not marked forwarded or ticked: {forwarded}")
+    closed = page_state(run)
+    if closed.get("open"):
+        fail(f"forward left a chat open: {closed}")
+    row = assert_row(run, LIVE_GROUP, preview="fixture outgoing needle", from_me=True)
+    evidence = save_evidence(
+        run, "forward", {"ok": True, "feature": "forward", "forward": forwarded, "row": row}
+    )
+    return {"ok": True, "feature": "forward", "evidence": str(evidence)}
+
+
+def drive_delete(run: dict) -> dict:
+    navigate(run, "verbs")
+    refused = run_product(run, "delete_chat.py", ["--contact", LIVE_GROUP])
+    refused_payload = last_json(refused) or {}
+    if refused.returncode == 0 or "group" not in json.dumps(refused_payload).lower():
+        fail(f"group delete was not refused: exit={refused.returncode} payload={refused_payload}")
+    navigate(run, "verbs")
+    removed_msg = require_product(
+        run,
+        "delete_outgoing.py",
+        ["--contact", LIVE_PHONE, "--needle", "fixture outgoing needle"],
+        timeout=70,
+    )
+    if removed_msg.get("mode") != "everyone":
+        fail(f"delete outgoing did not use Delete for everyone: {removed_msg}")
+    navigate(run, "verbs")
+    deleted = require_product(run, "delete_chat.py", ["--contact", "Scratch Delete"], timeout=70)
+    if not (deleted.get("verify") or {}).get("gone"):
+        fail(f"delete chat did not report the row gone: {deleted}")
+    closed = page_state(run)
+    titles = closed.get("titles") or []
+    if closed.get("open") or "Scratch Delete" in titles or LIVE_GROUP not in titles:
+        fail(f"list after delete is wrong: {closed}")
+    evidence = save_evidence(
+        run,
+        "delete",
+        {
+            "ok": True,
+            "feature": "delete",
+            "group_refused": refused_payload,
+            "delete_outgoing": removed_msg,
+            "delete_chat": deleted,
+            "list_after": closed,
+        },
+    )
+    return {"ok": True, "feature": "delete", "evidence": str(evidence)}
+
+
+DRIVES = {
+    "wake": drive_wake,
+    "scrape": drive_scrape,
+    "archive": drive_archive,
+    "send": drive_send,
+    "reply": drive_reply,
+    "react": drive_react,
+    "forward": drive_forward,
+    "delete": drive_delete,
+}
+
+
+def drive(feature: str) -> None:
+    if feature == "all":
+        reports = []
+        for name in DRIVE_FEATURES:
+            reports.append(DRIVES[name](require_fixture()))
+            print(json.dumps(reports[-1], ensure_ascii=False), flush=True)
+        return
+    if feature not in DRIVES:
+        fail(f"unknown feature {feature!r}; choose one of {', '.join(DRIVE_FEATURES)} or all")
+    report = DRIVES[feature](require_fixture())
+    print(json.dumps(report, ensure_ascii=False), flush=True)
+
+
+def live_contact(argv: list[str], default: str, allow_group: bool) -> str:
+    contact = default
+    if "--contact" in argv:
+        contact = argv[argv.index("--contact") + 1]
+    if "--from-contact" in argv:
+        contact = argv[argv.index("--from-contact") + 1]
+    if "--to-contact" in argv:
+        dest = argv[argv.index("--to-contact") + 1]
+        if not is_live_target(dest):
+            fail(f"refusing live destination {dest!r}; only {LIVE_PHONE} and {LIVE_GROUP!r}")
+    if not is_live_target(contact):
+        fail(f"refusing live contact {contact!r}; only {LIVE_PHONE} and {LIVE_GROUP!r}")
+    if not allow_group and contact.strip() == LIVE_GROUP:
+        fail(f"refusing {LIVE_GROUP!r} for this live command")
+    return contact
+
+
+def run_live(script: str, args: list[str], timeout: int = 90) -> None:
+    doctor_live()
+    env = os.environ.copy()
+    env["WA_CDP_HTTP"] = LIVE_CDP
+    proc = subprocess.run(
+        [sys.executable, str(REPO / script), *args],
+        cwd=str(REPO),
+        env=env,
+        timeout=timeout,
+    )
+    raise SystemExit(proc.returncode)
+
+
+def live(argv: list[str]) -> None:
+    if not argv:
+        fail("live needs a command: scrape, send, reply, react, forward, archive, unarchive, delete")
+    cmd = argv[0]
+    rest = argv[1:]
+    if cmd == "scrape":
+        run_live("scrape_chat_list.py", [])
+    elif cmd == "send":
+        if "--text" not in rest:
+            fail("live send requires --text")
+        contact = live_contact(rest, LIVE_PHONE, allow_group=True)
+        text = rest[rest.index("--text") + 1]
+        run_live("send_to_contact.py", ["--contact", contact, "--text", text])
+    elif cmd == "reply":
+        if "--needle" not in rest or "--text" not in rest:
+            fail("live reply requires --needle and --text")
+        contact = live_contact(rest, LIVE_PHONE, allow_group=True)
+        run_live(
+            "reply_to_message.py",
+            [
+                "--contact",
+                contact,
+                "--needle",
+                rest[rest.index("--needle") + 1],
+                "--text",
+                rest[rest.index("--text") + 1],
+            ],
+        )
+    elif cmd == "react":
+        if "--needle" not in rest:
+            fail("live react requires --needle")
+        contact = live_contact(rest, LIVE_PHONE, allow_group=True)
+        emoji = rest[rest.index("--emoji") + 1] if "--emoji" in rest else "👍"
+        run_live(
+            "react_to_message.py",
+            ["--contact", contact, "--needle", rest[rest.index("--needle") + 1], "--emoji", emoji],
+        )
+    elif cmd == "forward":
+        if "--needle" not in rest:
+            fail("live forward requires --needle")
+        source = live_contact(rest, LIVE_PHONE, allow_group=True)
+        dest = LIVE_GROUP if "--to-contact" not in rest else rest[rest.index("--to-contact") + 1]
+        if not is_live_target(dest):
+            fail(f"refusing live destination {dest!r}")
+        run_live(
+            "forward_message.py",
+            [
+                "--from-contact",
+                source,
+                "--needle",
+                rest[rest.index("--needle") + 1],
+                "--to-contact",
+                dest,
+            ],
+            timeout=120,
+        )
+    elif cmd == "archive":
+        live_contact(rest, LIVE_PHONE, allow_group=False)
+        run_live("archive_chat.py", ["--contact", LIVE_PHONE])
+    elif cmd == "unarchive":
+        live_contact(rest, LIVE_PHONE, allow_group=False)
+        run_live("archive_chat.py", ["--contact", LIVE_PHONE, "--unarchive"])
+    elif cmd == "delete":
+        live_contact(rest, LIVE_PHONE, allow_group=False)
+        if "--allow-group" in rest:
+            fail("refusing --allow-group on the live session")
+        run_live("delete_chat.py", ["--contact", LIVE_PHONE, "--dry-run"])
+    else:
+        fail(f"unknown live command {cmd!r}")
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        path = self.path.split("?", 1)[0]
+        files = {
+            "/health": None,
+            "/whatsapp-fixture/": HARNESS / "fixture_page.html",
+            "/whatsapp-fixture/index.html": HARNESS / "fixture_page.html",
+            "/whatsapp-fixture/fixture_page.js": HARNESS / "fixture_page.js",
+            "/whatsapp-fixture/fixture_page.css": HARNESS / "fixture_page.css",
+            "/whatsapp-fixture/rows.json": FIXTURES / "rows.json",
+            "/whatsapp-fixture/fibers.json": FIXTURES / "fibers.json",
+            "/whatsapp-fixture/archived.json": FIXTURES / "archived.json",
+        }
+        if path == "/health":
+            body = b"ok"
+            kind = "text/plain"
+        elif path not in files:
+            self.send_response(404)
+            self.end_headers()
+            return
+        else:
+            target = files[path]
+            body = target.read_bytes()
+            kind = "application/json" if target.suffix == ".json" else "text/html"
+            if target.suffix == ".js":
+                kind = "text/javascript"
+            elif target.suffix == ".css":
+                kind = "text/css"
+        self.send_response(200)
+        self.send_header("Content-Type", f"{kind}; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length") or "0")
+        body = self.rfile.read(length)
+        if self.path.split("?", 1)[0] != "/webhook":
+            self.send_response(404)
+            self.end_headers()
+            return
+        if WEBHOOK_PATH is not None:
+            with WEBHOOK_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(body.decode("utf-8", "replace"))
+                if not body.endswith(b"\n"):
+                    handle.write("\n")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, fmt: str, *args) -> None:
+        return
+
+
+def serve(argv: list[str]) -> None:
+    global WEBHOOK_PATH
+    scratch = Path(argv[argv.index("--scratch") + 1])
+    port = int(argv[argv.index("--port") + 1])
+    WEBHOOK_PATH = scratch / "webhook.jsonl"
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.serve_forever()
+
+
+def main(argv: list[str]) -> None:
+    if len(argv) < 2:
+        fail("usage: verify-wacdp launch|doctor|drive|cleanup|live")
+    cmd = argv[1]
+    if cmd == "_serve":
+        serve(argv)
+        return
+    if cmd == "launch":
+        launch()
+    elif cmd == "doctor":
+        doctor(live="--live" in argv)
+    elif cmd == "cleanup":
+        cleanup()
+    elif cmd == "drive":
+        if len(argv) < 3:
+            fail(f"drive needs a feature: {', '.join(DRIVE_FEATURES)}")
+        drive(argv[2])
+    elif cmd == "live":
+        live(argv[2:])
+    else:
+        fail(f"unknown command {cmd!r}")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv)
+    except BrokenPipeError:
+        raise SystemExit(0)

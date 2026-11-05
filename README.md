@@ -34,6 +34,7 @@ MIT
 - Phone lookups work for saved contacts: the chat's number is read from WhatsApp Web's React props.
 - `WACDP_SYNTHETIC_CLICKS=1` (or a `.synthetic_clicks` file) adds JS click fallback for headless CDP. Off by default; don't enable on a normal Chrome.
 - Tests: `python3 -m unittest discover tests`
+- Verification skill (fixture CDP, no WhatsApp session): `.cursor/skills/verify-wacdp/`. Launch with `python3 .cursor/skills/verify-wacdp/bin/verify-wacdp launch`, then `drive scrape`. Live checks against box-chrome `:9225` are a separate, opt-in procedure in that skill and only use `+20 10 92600692` and the group `WhatsApp slack bridging`.
 
 ## Neutral chat list
 
