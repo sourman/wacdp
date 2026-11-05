@@ -43,11 +43,15 @@ SCRAPE_JS = r"""
             meta.id = id;
             meta.is_group = !!v.isGroup || /@g\.us$/.test(id);
             if (v.contact) {
-              if (typeof v.contact.isAddressBookContact === 'number')
-                meta.is_address_book_contact = v.contact.isAddressBookContact;
-              else if (typeof v.contact.isAddressBookContact === 'boolean')
-                meta.is_address_book_contact = v.contact.isAddressBookContact ? 1 : 0;
-              meta.is_business = !!v.contact.isBusiness;
+              const c = v.contact;
+              if (typeof c.isAddressBookContact === 'number')
+                meta.is_address_book_contact = c.isAddressBookContact;
+              else if (typeof c.isAddressBookContact === 'boolean')
+                meta.is_address_book_contact = c.isAddressBookContact ? 1 : 0;
+              else
+                // Missing flag: address-book entries have name/shortName; pushname-only = unsaved
+                meta.is_address_book_contact = (c.name || c.shortName) ? 1 : 0;
+              meta.is_business = !!c.isBusiness;
             }
             return meta;
           }
@@ -108,12 +112,78 @@ SCRAPE_JS = r"""
     const you_prefix = /^\s*You:\s*/i.test(preview) || /^\s*You:\s*/i.test(secondary);
     const from_me = selfRow || tickOut || you_prefix;
     const meta = chatMeta(el);
-    out.push({ who, chat_id: meta.id, sender, preview, unread, muted, time, from_me, is_reaction, status_icon: statusTitle.slice(0, 64) || null, is_address_book_contact: meta.is_address_book_contact, is_business: meta.is_business, is_group: meta.is_group });
+    out.push({ who, chat_id: meta.id, sender, preview, unread, muted, time, from_me, is_reaction, status_icon: statusTitle.slice(0, 64) || null, is_address_book_contact: meta.is_address_book_contact, is_business: meta.is_business, is_group: meta.is_group, archived: false });
+  }
+
+  // Archived chats with Keep-chats-archived stay out of #pane-side. Merge
+  // unread archived rows from ChatCollection so non-contact spam still wakes.
+  let archived_merged = 0;
+  try {
+    const { ChatCollection } = require('WAWebChatCollection');
+    const models = ChatCollection.getModelsArray();
+    const have = {};
+    for (const c of out) if (c.chat_id) have[c.chat_id] = 1;
+    for (const ch of models) {
+      if (!ch.__x_archive) continue;
+      const unread = ch.__x_unreadCount || 0;
+      if (unread <= 0) continue;
+      const cid = (ch.id && ch.id._serialized) || '';
+      if (!cid || have[cid]) continue;
+      const contact = ch.__x_contact;
+      let isAB = null, isBiz = false;
+      if (contact) {
+        if (typeof contact.isAddressBookContact === 'number') isAB = contact.isAddressBookContact;
+        else if (typeof contact.isAddressBookContact === 'boolean') isAB = contact.isAddressBookContact ? 1 : 0;
+        else
+          // Missing flag: address-book entries have name/shortName; pushname-only = unsaved
+          isAB = (contact.name || contact.shortName) ? 1 : 0;
+        isBiz = !!contact.isBusiness;
+      }
+      const isGroup = !!ch.__x_isGroup || /@g\.us$/.test(cid);
+      // Prefer verified/push name for Gate triage; fall back to phone formattedTitle
+      const who = (
+        (contact && (contact.verifiedName || contact.name || contact.pushname))
+        || ch.__x_formattedTitle || cid
+      );
+      let preview = '';
+      let from_me = false;
+      try {
+        const cp = ch.__x_chatlistPreview;
+        const msg = cp && (cp.msg || cp);
+        if (msg) {
+          preview = String(msg.body || msg.__x_body || msg.caption || msg.__x_caption || '').slice(0, 280);
+          from_me = !!(msg.id && msg.id.fromMe) || !!(msg.__x_id && msg.__x_id.fromMe);
+        }
+      } catch (e) {}
+      const muteExp = ch.__x_muteExpiration;
+      const muted = typeof muteExp === 'number' && muteExp > 0;
+      out.push({
+        who: String(who || '').trim(),
+        chat_id: cid,
+        sender: '',
+        preview,
+        unread,
+        muted,
+        time: '',
+        from_me,
+        is_reaction: false,
+        status_icon: null,
+        is_address_book_contact: isAB,
+        is_business: isBiz,
+        is_group: isGroup,
+        archived: true,
+      });
+      have[cid] = 1;
+      archived_merged++;
+    }
+  } catch (e) {
+    // require/ChatCollection unavailable — main-list scrape still returned
   }
   return {
     ok: true,
     title: document.title,
     chats: out,
+    archived_merged,
   };
 })()
 """

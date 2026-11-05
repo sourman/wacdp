@@ -30,7 +30,7 @@ MIT
 
 ## Notes
 
-- `scrape_chat_list.py` returns `chat_id` (JID), `sender` (group author), `from_me`, `is_address_book_contact`, `is_business`, `is_group` per row.
+- `scrape_chat_list.py` returns `chat_id` (JID), `sender` (group author), `from_me`, `is_address_book_contact`, `is_business`, `is_group`, `archived` per row. Unread archived chats are merged from `WAWebChatCollection` (Keep chats archived) so non-contact spam still wakes.
 - Phone lookups work for saved contacts: the chat's number is read from WhatsApp Web's React props.
 - `WACDP_SYNTHETIC_CLICKS=1` (or a `.synthetic_clicks` file) adds JS click fallback for headless CDP. Off by default; don't enable on a normal Chrome.
 - Tests: `python3 -m unittest discover tests`

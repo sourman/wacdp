@@ -200,10 +200,11 @@ def is_unknown_noncontact(chat: dict) -> bool:
     """Not a saved address-book contact (and not a group).
 
     Primary signal: scrape ``is_address_book_contact`` from WA React props
-    (1 = saved, 0 = not saved). Fallbacks when the fiber walk fails:
-    a phone-looking title counts as unknown; a named title with no flag
-    is treated as a contact (do not wake) so we never spam Gate on
-    every named saved chat when CDP props go missing.
+    (1 = saved, 0 = not saved). Fallbacks when the fiber/store flag is
+    missing: phone-looking titles and WA Business accounts count as
+    unknown (realtor API blasts often show a verified name, not a number).
+    A plain named title with no business flag is treated as a contact so
+    we never wake on every named saved chat when CDP props go missing.
     Groups are never unknown — they only wake via client_allowlist.
     """
     if is_group_chat(chat):
@@ -213,7 +214,9 @@ def is_unknown_noncontact(chat: dict) -> bool:
         return False
     if ab is False or ab == 0:
         return True
-    # fiber miss
+    # flag miss: business API / phone title → unknown; bare name → quiet
+    if chat.get("is_business"):
+        return True
     return title_looks_like_phone(chat.get("who") or "")
 
 
@@ -403,6 +406,8 @@ def _unread_payload(chat: dict, reason: str, kind: str | None = None) -> dict:
         out["kind"] = kind
     if chat.get("is_business"):
         out["is_business"] = True
+    if chat.get("archived"):
+        out["archived"] = True
     ab = chat.get("is_address_book_contact")
     if ab is not None:
         out["is_address_book_contact"] = int(ab) if ab in (0, 1, True, False) else ab

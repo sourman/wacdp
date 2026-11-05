@@ -136,5 +136,53 @@ class DiffAllowlist(unittest.TestCase):
         self.assertEqual(hits, [])
 
 
+
+class BusinessAndArchived(unittest.TestCase):
+    def test_business_flag_miss_is_unknown(self):
+        # Named realtor API blast: fiber/store missed AB, but is_business set
+        c = chat(
+            who="Mountain View",
+            chat_id="213077823905831@lid",
+            is_address_book_contact=None,
+            is_business=True,
+            archived=True,
+            unread=16,
+        )
+        self.assertEqual(daemon.wake_kind(c, CFG), "unknown")
+
+    def test_named_non_business_flag_miss_stays_quiet(self):
+        c = chat(who="Some Friend", chat_id="999@lid", is_address_book_contact=None, is_business=False)
+        self.assertIsNone(daemon.wake_kind(c, CFG))
+
+
+    def test_pushname_only_ab0_is_unknown(self):
+        # Archived realtor: Store omitted isAddressBookContact; scrape infers 0
+        c = chat(
+            who="Home Finder",
+            chat_id="39295410827333@lid",
+            is_address_book_contact=0,
+            is_business=False,
+            archived=True,
+            unread=1,
+        )
+        self.assertEqual(daemon.wake_kind(c, CFG), "unknown")
+
+    def test_archived_unknown_badge_payload(self):
+        state = {"seen": {}}
+        spam = chat(
+            who="Mountain View",
+            chat_id="213077823905831@lid",
+            preview="Last chance to own",
+            unread=16,
+            is_address_book_contact=0,
+            is_business=True,
+            archived=True,
+        )
+        hits = daemon.diff_incoming(state, [spam], CFG, now=1_700_000_000, gate_sent={})
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["kind"], "unknown")
+        self.assertTrue(hits[0].get("archived"))
+        self.assertTrue(hits[0].get("is_business"))
+
 if __name__ == "__main__":
     unittest.main()
