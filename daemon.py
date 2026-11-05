@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """Poll WA chat list; POST new unmuted unreads to Gate webhook.
 
+Wake policy (Ahmed 2026-11-05): POST only for
+  (a) client_allowlist chat_ids (kind=client), or
+  (b) non-contacts — not in the address book / unknown number or business
+      name that is not a saved contact (kind=unknown).
+Saved contacts and groups that are not on the allowlist never wake.
+Denylist still drops first. Wedge / daemon_down health events stay unchanged.
+Gate judges urgency and archives realtor spam itself — the daemon does not.
+
 Also watches open_cases.json for outbound (from_me) replies on watched contacts.
 A chat left open never grows an unread badge (WhatsApp marks the reply read);
 those still alert when the list preview or clock time changes on an inbound row.
@@ -159,6 +167,65 @@ def is_denied(chat: dict, cfg: dict) -> bool:
     ids = cfg.get("denylist_ids") or {}
     cid = (chat.get("chat_id") or "").strip()
     return bool(cid) and cid in ids
+
+
+def is_allowlisted(chat: dict, cfg: dict) -> bool:
+    """True when chat_id is a key in client_allowlist."""
+    ids = cfg.get("client_allowlist") or {}
+    cid = (chat.get("chat_id") or "").strip()
+    return bool(cid) and cid in ids
+
+
+_PHONE_TITLE_RE = re.compile(
+    r"^\+?\d[\d\s\-().]{5,}\d$",
+)
+
+
+def title_looks_like_phone(who: str) -> bool:
+    """Chat-list title is a phone number (unsaved contact display)."""
+    s = norm_ws(who).replace(" ", " ")
+    if not s:
+        return False
+    return bool(_PHONE_TITLE_RE.match(s))
+
+
+def is_group_chat(chat: dict) -> bool:
+    if chat.get("is_group"):
+        return True
+    cid = (chat.get("chat_id") or "").strip()
+    return cid.endswith("@g.us")
+
+
+def is_unknown_noncontact(chat: dict) -> bool:
+    """Not a saved address-book contact (and not a group).
+
+    Primary signal: scrape ``is_address_book_contact`` from WA React props
+    (1 = saved, 0 = not saved). Fallbacks when the fiber walk fails:
+    a phone-looking title counts as unknown; a named title with no flag
+    is treated as a contact (do not wake) so we never spam Gate on
+    every named saved chat when CDP props go missing.
+    Groups are never unknown — they only wake via client_allowlist.
+    """
+    if is_group_chat(chat):
+        return False
+    ab = chat.get("is_address_book_contact")
+    if ab is True or ab == 1:
+        return False
+    if ab is False or ab == 0:
+        return True
+    # fiber miss
+    return title_looks_like_phone(chat.get("who") or "")
+
+
+def wake_kind(chat: dict, cfg: dict) -> str | None:
+    """Return 'client', 'unknown', or None (do not webhook). Denylist first."""
+    if is_denied(chat, cfg):
+        return None
+    if is_allowlisted(chat, cfg):
+        return "client"
+    if is_unknown_noncontact(chat):
+        return "unknown"
+    return None
 
 
 def load_open_cases() -> dict:
@@ -320,9 +387,10 @@ def inbound_read_activity(prev: dict | None, chat: dict, suppress_reactions: boo
     return False
 
 
-def _unread_payload(chat: dict, reason: str) -> dict:
-    # Historical fields, plus reason (badge = unread count, preview = list diff).
-    return {
+def _unread_payload(chat: dict, reason: str, kind: str | None = None) -> dict:
+    # Historical fields, plus reason (badge = unread count, preview = list diff)
+    # and kind (client = allowlisted, unknown = non-contact).
+    out = {
         "who": chat.get("who") or "",
         "chat_id": chat.get("chat_id", ""),
         "sender": chat.get("sender", ""),
@@ -331,6 +399,14 @@ def _unread_payload(chat: dict, reason: str) -> dict:
         "muted": False,
         "reason": reason,
     }
+    if kind:
+        out["kind"] = kind
+    if chat.get("is_business"):
+        out["is_business"] = True
+    ab = chat.get("is_address_book_contact")
+    if ab is not None:
+        out["is_address_book_contact"] = int(ab) if ab in (0, 1, True, False) else ab
+    return out
 
 
 def diff_incoming(
@@ -342,9 +418,11 @@ def diff_incoming(
 ) -> list:
     """Update state['seen'] / state['baseline'] and return unread payloads.
 
-    ``badge``: unmuted, not denied, unread > 0, fingerprint changed. Reactions
-    count unless cfg["suppress_reactions"] is true.
+    ``badge``: unmuted, wakes (allowlist or unknown non-contact), unread > 0,
+    fingerprint changed. Reactions count unless cfg["suppress_reactions"] is true.
     ``preview``: unread is 0, but inbound_read_activity against the saved row.
+    Each hit gets ``kind``: "client" (client_allowlist) or "unknown" (non-contact).
+    Saved contacts / groups off the allowlist are baselined but never posted.
     A preview that exactly matches a live gate_sent stamp (after whitespace
     normalization) is the user's own send. Status ticks can lag one poll, so
     that match is consulted both when the preview text changes and when only
@@ -382,7 +460,8 @@ def diff_incoming(
         snap = chat_snapshot(c)
         unread = snap["unread"]
         reason = None
-        if not c.get("muted") and not is_denied(c, cfg):
+        kind = None if c.get("muted") else wake_kind(c, cfg)
+        if kind:
             if unread > 0 and not (suppress_reactions and is_reaction_activity(c)):
                 fp = fingerprint(c)
                 if seen.get(who) != fp:
@@ -411,8 +490,8 @@ def diff_incoming(
         if unread == 0:
             seen.pop(who, None)
         baseline[who] = snap
-        if reason:
-            hits.append(_unread_payload(c, reason))
+        if reason and kind:
+            hits.append(_unread_payload(c, reason, kind))
     return hits
 
 

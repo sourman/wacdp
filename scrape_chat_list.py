@@ -26,7 +26,10 @@ SCRAPE_JS = r"""
   }
   // Stable chat JID (e.g. 1234@lid, 1203...@g.us) from the row's React props.
   // Read-only walk up the fiber tree; '' if WhatsApp changes internals.
-  const jidOf = (row) => {
+  // Stable chat JID + contact flags from the row's React props (read-only).
+  // isAddressBookContact: 1 = saved contact, 0 = not in address book, null = unknown/group.
+  const chatMeta = (row) => {
+    const meta = { id: '', is_address_book_contact: null, is_business: false, is_group: false };
     try {
       const el = row.querySelector('div') || row;
       const k = Object.keys(el).find(k => k.startsWith('__reactFiber'));
@@ -36,13 +39,25 @@ SCRAPE_JS = r"""
         if (p) for (const key of Object.keys(p)) {
           const v = p[key];
           const id = v && v.id && (v.id._serialized || (v.id.user && v.id.server && v.id.user + '@' + v.id.server));
-          if (typeof id === 'string' && /@(c\.us|g\.us|lid|newsletter|broadcast)$/.test(id)) return id;
+          if (typeof id === 'string' && /@(c\.us|g\.us|lid|newsletter|broadcast)$/.test(id)) {
+            meta.id = id;
+            meta.is_group = !!v.isGroup || /@g\.us$/.test(id);
+            if (v.contact) {
+              if (typeof v.contact.isAddressBookContact === 'number')
+                meta.is_address_book_contact = v.contact.isAddressBookContact;
+              else if (typeof v.contact.isAddressBookContact === 'boolean')
+                meta.is_address_book_contact = v.contact.isAddressBookContact ? 1 : 0;
+              meta.is_business = !!v.contact.isBusiness;
+            }
+            return meta;
+          }
         }
         f = f.return; d++;
       }
     } catch (e) {}
-    return '';
+    return meta;
   };
+  const jidOf = (row) => chatMeta(row).id;
   const items = pane.querySelectorAll('[role="row"], [role="listitem"]');
   const out = [];
   const seen = {};
@@ -92,7 +107,8 @@ SCRAPE_JS = r"""
     const is_reaction = /^\s*Reacted\b/i.test(secondary) || /^\s*Reacted\b/i.test(preview);
     const you_prefix = /^\s*You:\s*/i.test(preview) || /^\s*You:\s*/i.test(secondary);
     const from_me = selfRow || tickOut || you_prefix;
-    out.push({ who, chat_id: jidOf(el), sender, preview, unread, muted, time, from_me, is_reaction, status_icon: statusTitle.slice(0, 64) || null });
+    const meta = chatMeta(el);
+    out.push({ who, chat_id: meta.id, sender, preview, unread, muted, time, from_me, is_reaction, status_icon: statusTitle.slice(0, 64) || null, is_address_book_contact: meta.is_address_book_contact, is_business: meta.is_business, is_group: meta.is_group });
   }
   return {
     ok: true,

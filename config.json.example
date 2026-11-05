@@ -1,6 +1,13 @@
 {
   "webhook_url": "https://api2.cursor.sh/automations/webhook/PASTE_ID",
   "webhook_key": "PASTE_FROM_SECRET_NOT_CHAT",
-  "denylist_ids": {"120363000000000000@g.us": "Example group label"},
-  "suppress_reactions": false
+  "denylist_ids": {
+    "120363000000000000@g.us": "Example denied group"
+  },
+  "client_allowlist": {
+    "189928336048173@lid": "Example client 1:1",
+    "120363000000000001@g.us": "Example client group"
+  },
+  "suppress_reactions": false,
+  "cdp_http": "http://127.0.0.1:9225"
 }

@@ -9,3 +9,7 @@ state.json
 .DS_Store
 
 .synthetic_clicks
+open_cases.json
+gate_sent.json
+failed_posts.jsonl
+tests/__pycache__/

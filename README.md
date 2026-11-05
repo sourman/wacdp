@@ -20,7 +20,7 @@ Scripts talk to an already-logged-in Chromium (URL from `WA_CDP_HTTP`, else `cdp
 | `forward_message.py` | Forward a bubble to another chat |
 | `react_to_message.py` | React with emoji |
 | `wa_cdp.py` | Shared CDP primitives (`leave_neutral` / `closing_chat`) |
-| `daemon.py` + `ensure.sh` / `supervise.sh` | Unmuted unread poll → webhook. Denylist is `denylist_ids` only: exact chat JID from scrape `chat_id`. The old title `denylist` is ignored |
+| `daemon.py` + `ensure.sh` / `supervise.sh` | Unmuted unread poll → webhook. Wakes only `client_allowlist` JIDs (`kind=client`) or non-contacts (`kind=unknown`). `denylist_ids` still drops first. Title `denylist` is ignored |
 
 Copy `config.json.example` → `config.json` locally. **Never commit webhook secrets.**
 
@@ -30,7 +30,7 @@ MIT
 
 ## Notes
 
-- `scrape_chat_list.py` returns `chat_id` (JID), `sender` (group author), `from_me` per row.
+- `scrape_chat_list.py` returns `chat_id` (JID), `sender` (group author), `from_me`, `is_address_book_contact`, `is_business`, `is_group` per row.
 - Phone lookups work for saved contacts: the chat's number is read from WhatsApp Web's React props.
 - `WACDP_SYNTHETIC_CLICKS=1` (or a `.synthetic_clicks` file) adds JS click fallback for headless CDP. Off by default; don't enable on a normal Chrome.
 - Tests: `python3 -m unittest discover tests`
@@ -45,7 +45,7 @@ WhatsApp Web marks an incoming message read as soon as that chat is on screen, s
 
 `daemon.py` polls the chat list (default every 20s, `WA_LISTEN_INTERVAL`) and POSTs JSON. Event names are unchanged: `unread`, `outbound`, `wedge`, `daemon_down`. Set `suppress_reactions` to true to skip reaction rows; it defaults to false, so a missing key still alerts.
 
-`unread` chat objects keep `who`, `chat_id`, `sender`, `preview`, `unread`, `muted`, and add:
+`unread` chat objects keep `who`, `chat_id`, `sender`, `preview`, `unread`, `muted`, add `kind` (`client` | `unknown`), and optionally `is_address_book_contact` / `is_business`, plus:
 
 | `reason` | When |
 |---|---|
@@ -60,6 +60,7 @@ Not alerted:
 - Reactions, only when `suppress_reactions` is true. The default is to alert. The user's own `You reacted` row is still their own send.
 - The same row on the next poll (state keeps a per-chat baseline and the badge fingerprint).
 - Muted chats and denylisted chats.
+- Saved contacts and groups that are not on `client_allowlist` (they are still baselined so a later allowlist add does not replay history).
 - A chat the daemon has never baselined. The first poll records it and does not replay history. A day-label roll (`1:00 PM` → `Yesterday`) is not a new message.
 
 Restart the daemon (or `supervise.sh`) after upgrading. The new poll loop and the baseline in `state.json` load only on process start. The first poll after a restart with an empty baseline only seeds state; badge unreads still alert immediately.

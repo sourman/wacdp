@@ -21,6 +21,9 @@ def chat(**kw):
         "time": "1:00 PM",
         "from_me": False,
         "is_reaction": False,
+        "is_address_book_contact": 1,
+        "is_business": False,
+        "is_group": False,
     }
     base.update(kw)
     return base
@@ -55,7 +58,17 @@ class Activity(unittest.TestCase):
 
 
 class DiffIncoming(unittest.TestCase):
-    cfg = {"denylist": [], "denylist_ids": {}}
+    # Default fixtures use Ada@111 and friends on the allowlist so legacy
+    # activity tests still exercise badge/preview logic under the new policy.
+    cfg = {
+        "denylist": [],
+        "denylist_ids": {},
+        "client_allowlist": {
+            "111@c.us": "Ada",
+            "2@c.us": "Bea",
+            "9@g.us": "Group",
+        },
+    }
 
     def diff(self, state, chats, gate_sent=None, cfg=None):
         return daemon.diff_incoming(
@@ -310,7 +323,13 @@ class TickWebhook(unittest.TestCase):
             "seen": {},
             "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello", time="1:00 PM", from_me=True))},
         }
-        cfg = {"webhook_url": "http://example", "webhook_key": "k", "denylist": [], "denylist_ids": {}}
+        cfg = {
+            "webhook_url": "http://example",
+            "webhook_key": "k",
+            "denylist": [],
+            "denylist_ids": {},
+            "client_allowlist": {"111@c.us": "Ada"},
+        }
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             with (
