@@ -39,6 +39,14 @@ LOG = DIR / "daemon.log"
 LOCK = DIR / "daemon.lock"
 PIDFILE = DIR / "daemon.pid"
 INTERVAL = float(os.environ.get("WA_LISTEN_INTERVAL", "20"))
+# While scraping keeps failing, repeat the wedge alert this often (seconds).
+WEDGE_REPEAT = float(os.environ.get("WA_LISTEN_WEDGE_REPEAT", "1800"))
+# A wall-clock gap this large between ticks means the host slept or the process stalled.
+TICK_GAP = float(os.environ.get("WA_LISTEN_TICK_GAP", "300"))
+# Preview-only hits (unread 0, no tick yet) wait this long before posting, so an
+# own send whose sent/pending marker renders a poll late is dropped, not alerted.
+BASELINE_V = 2
+PREVIEW_HOLD = float(os.environ.get("WA_LISTEN_PREVIEW_HOLD", "45"))
 
 
 def log(msg: str) -> None:
@@ -309,9 +317,12 @@ _REACTION_RE = re.compile(
     r"^\s*(?:you\s+)?reacted\b|^\s*\S+\s+reacted\s+\S*\W\S*\s+to\b",
     re.IGNORECASE,
 )
+# Outbound markers in the row's last-msg-status: ticks, plus the clock/pending
+# icon WhatsApp shows while a message or document is still uploading.
 _TICK_RE = re.compile(
-    r"wds-ic-read|wds-ic-delivered|wds-ic-sent|msg-check|msg-dblcheck|"
-    r"status-dblcheck|status-check",
+    r"wds-ic-(?:read|delivered|sent|pending|clock|time|schedule|msg-time|failed|error)|"
+    r"msg-(?:check|dblcheck|time)|status-(?:check|dblcheck|time)|(?:^|[,-])pending|"
+    r"ic-schedule|msg-pending",
     re.IGNORECASE,
 )
 
@@ -556,24 +567,93 @@ def process_open_cases(cfg: dict, state: dict, chats: list) -> None:
             save_json(OPEN_CASES, cases_doc)
 
 
+def hold_preview_hits(state: dict, hits: list, now: float) -> list:
+    """Park reason=preview hits in state['held']; return the rest (badge hits) to post now."""
+    held = state.setdefault("held", {})
+    if not isinstance(held, dict):
+        held = {}
+        state["held"] = held
+    now_hits = []
+    for h in hits:
+        if h.get("reason") == "preview" and PREVIEW_HOLD > 0:
+            held[h.get("who") or ""] = {
+                "payload": h,
+                "preview": norm_ws(str(h.get("preview") or "")),
+                "since": now,
+            }
+        else:
+            now_hits.append(h)
+    return now_hits
+
+
+def settle_held(state: dict, chats: list, now: float) -> list:
+    """Resolve held preview hits against the current chat list.
+
+    Dropped: the row now shows an outbound marker (our own send/upload), or its
+    preview moved on (a newer change is judged by diff_incoming on its own).
+    Posted: still the same non-own preview after PREVIEW_HOLD seconds, or the
+    row left the list (do not lose a possible inbound message).
+    """
+    held = state.get("held")
+    if not isinstance(held, dict) or not held:
+        return []
+    rows = {c.get("who"): c for c in chats or [] if isinstance(c, dict) and c.get("who")}
+    ready = []
+    for who, h in list(held.items()):
+        row = rows.get(who)
+        since = float((h or {}).get("since") or 0)
+        if row is not None and is_own_activity(row):
+            log(f"held preview dropped (own send): {who}")
+            held.pop(who, None)
+        elif row is not None and norm_ws(str(row.get("preview") or "")) != (h or {}).get("preview"):
+            held.pop(who, None)
+        elif now - since >= PREVIEW_HOLD:
+            ready.append((h or {}).get("payload") or {})
+            held.pop(who, None)
+    return [p for p in ready if p]
+
+
+def wedge_due(state: dict, now: float) -> bool:
+    """First failure of an outage alerts at once; repeats every WEDGE_REPEAT.
+
+    state["wedge_since"] marks the current outage. A post from an earlier
+    outage (last_wedge_post < wedge_since) never suppresses a new one.
+    """
+    since = state.get("wedge_since")
+    last = state.get("last_wedge_post")
+    if since is None or last is None or float(last) < float(since):
+        return True
+    return now - float(last) >= WEDGE_REPEAT
+
+
 def tick(cfg: dict, state: dict) -> dict:
+    now = time.time()
+    prev_tick = state.get("last_tick_at")
+    gap = now - float(prev_tick) if prev_tick is not None else 0.0
+    if gap > TICK_GAP:
+        log(f"tick gap {int(gap)}s since last poll (host slept or process stalled?)")
+    state["last_tick_at"] = now
     data = scrape(cfg)
     if data.get("error"):
         log(f"scrape error: {data}")
-        last_wedge = state.get("last_wedge_post", 0)
-        if time.time() - last_wedge > 3600 and cfg.get("webhook_url"):
-            if post_webhook(
-                cfg,
-                {
-                    "event": "wedge",
-                    "chats": [],
-                    "note": f"cdp/scrape: {data.get('error')}",
-                },
-            ):
-                state["last_wedge_post"] = time.time()
-                save_json(STATE, state)
+        state.setdefault("wedge_since", now)
+        if cfg.get("webhook_url") and wedge_due(state, now):
+            payload = {
+                "event": "wedge",
+                "chats": [],
+                "note": f"cdp/scrape: {data.get('error')}",
+                "down_for_s": int(now - float(state["wedge_since"])),
+            }
+            if gap > TICK_GAP:
+                payload["tick_gap_s"] = int(gap)
+            if post_webhook(cfg, payload):
+                state["last_wedge_post"] = now
+        save_json(STATE, state)
         return state
 
+    if state.pop("wedge_since", None) is not None:
+        log("scrape recovered")
+    state.pop("last_wedge_post", None)
     chats = data.get("chats") or []
     # --- open-cases outbound watches (independent of unread) ---
     process_open_cases(cfg, state, chats)
@@ -581,7 +661,19 @@ def tick(cfg: dict, state: dict) -> dict:
     # badge: unread > 0. preview: inbound list change while unread stays 0
     # (chat was open, so WhatsApp marked the reply read). Event type stays
     # "unread"; each chat carries reason "badge" or "preview".
-    new_hits = diff_incoming(state, chats, cfg)
+    # One-time reseed when the row format changes (v2: clock read from its own
+    # cell, all status icon names). Badge 'seen' is kept, so unread still alerts next tick.
+    if state.get("baseline_v") != BASELINE_V:
+        state["baseline"] = {
+            c.get("who"): chat_snapshot(c) for c in chats if isinstance(c, dict) and c.get("who")
+        }
+        state["baseline_v"] = BASELINE_V
+        log(f"baseline reseeded (v{BASELINE_V}, {len(state['baseline'])} rows)")
+        save_json(STATE, state)
+        return state
+
+    ready = settle_held(state, chats, now)
+    new_hits = ready + hold_preview_hits(state, diff_incoming(state, chats, cfg), now)
     if new_hits:
         log(f"new hits: {[c['who'] for c in new_hits]}")
         post_webhook(cfg, {"event": "unread", "chats": new_hits})

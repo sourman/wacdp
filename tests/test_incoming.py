@@ -321,6 +321,7 @@ class TickWebhook(unittest.TestCase):
 
         state = {
             "seen": {},
+            "baseline_v": daemon.BASELINE_V,
             "baseline": {"Ada": daemon.chat_snapshot(chat(preview="Hello", time="1:00 PM", from_me=True))},
         }
         cfg = {
@@ -339,6 +340,7 @@ class TickWebhook(unittest.TestCase):
                 mock.patch.object(daemon, "scrape", fake_scrape),
                 mock.patch.object(daemon, "post_webhook", fake_post),
                 mock.patch.object(daemon, "log"),
+                mock.patch.object(daemon, "PREVIEW_HOLD", 0),
             ):
                 daemon.tick(cfg, state)
             saved = json.loads((root / "state.json").read_text(encoding="utf-8"))
@@ -361,6 +363,7 @@ class TickWebhook(unittest.TestCase):
                 mock.patch.object(daemon, "scrape", same_scrape),
                 mock.patch.object(daemon, "post_webhook", fake_post),
                 mock.patch.object(daemon, "log"),
+                mock.patch.object(daemon, "PREVIEW_HOLD", 0),
             ):
                 daemon.tick(cfg, state)
         self.assertEqual(calls, [])
@@ -393,6 +396,78 @@ class GateSent(unittest.TestCase):
                 stored = json.loads(path.read_text(encoding="utf-8"))["Ada"]["preview"]
                 self.assertEqual(stored, body[:280])
                 self.assertEqual(len(stored), 280)
+
+
+class PreviewHold(unittest.TestCase):
+    """Own sends whose sent/pending marker renders late must not alert as incoming."""
+
+    def run_tick(self, state, rows, now, posts):
+        cfg = {
+            "webhook_url": "http://example",
+            "webhook_key": "k",
+            "denylist": [],
+            "denylist_ids": {},
+            "client_allowlist": {"111@c.us": "Ada"},
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                mock.patch.object(daemon, "STATE", root / "state.json"),
+                mock.patch.object(daemon, "OPEN_CASES", root / "open_cases.json"),
+                mock.patch.object(daemon, "GATE_SENT", root / "gate_sent.json"),
+                mock.patch.object(daemon, "scrape", lambda cfg=None: {"chats": rows}),
+                mock.patch.object(daemon, "post_webhook", lambda c, p: posts.append(p) or True),
+                mock.patch.object(daemon, "log"),
+                mock.patch.object(daemon, "PREVIEW_HOLD", 45),
+                mock.patch.object(daemon.time, "time", lambda: now),
+            ):
+                return daemon.tick(cfg, state)
+
+    def base(self):
+        return {"seen": {}, "baseline_v": daemon.BASELINE_V,
+                "baseline": {"Ada": daemon.chat_snapshot(chat(preview="hello", time="17:30", from_me=False))}}
+
+    def test_pending_marker_is_own(self):
+        self.assertTrue(daemon.is_own_activity(chat(preview="x", status_icon="wds-ic-pending,ic-description")))
+        self.assertTrue(daemon.is_own_activity(chat(preview="x", status_icon="msg-time")))
+        self.assertFalse(daemon.is_own_activity(chat(preview="x", status_icon="ic-description")))
+        self.assertFalse(daemon.is_own_activity(chat(preview="x", status_icon="")))
+
+    def test_own_document_caption_dropped_when_tick_appears(self):
+        posts, st = [], self.base()
+        st = self.run_tick(st, [chat(preview="Management handbook", time="17:36", status_icon="ic-description")], 1000, posts)
+        self.assertEqual(posts, [])
+        st = self.run_tick(st, [chat(preview="Management handbook", time="17:36", from_me=True, status_icon="wds-ic-sent,ic-description")], 1020, posts)
+        st = self.run_tick(st, [chat(preview="Management handbook", time="17:36", from_me=True, status_icon="wds-ic-delivered,ic-description")], 1100, posts)
+        self.assertEqual(posts, [])
+        self.assertEqual(st.get("held"), {})
+
+    def test_real_inbound_preview_posts_after_hold(self):
+        posts, st = [], self.base()
+        row = chat(preview="hello, nice to meet you", time="17:40", status_icon="")
+        st = self.run_tick(st, [row], 1000, posts)
+        self.assertEqual(posts, [])
+        st = self.run_tick(st, [row], 1020, posts)
+        self.assertEqual(posts, [])
+        st = self.run_tick(st, [row], 1050, posts)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["chats"][0]["preview"], "hello, nice to meet you")
+        st = self.run_tick(st, [row], 1100, posts)
+        self.assertEqual(len(posts), 1)
+
+    def test_badge_hits_post_immediately(self):
+        posts, st = [], self.base()
+        self.run_tick(st, [chat(preview="new msg", time="17:41", unread=1)], 1000, posts)
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(posts[0]["chats"][0]["reason"], "badge")
+
+    def test_old_baseline_is_reseeded_without_alerts(self):
+        posts = []
+        st = {"seen": {}, "baseline": {"Ada": {"preview": "hello", "time": "Ada", "sender": "", "from_me": False}}}
+        st = self.run_tick(st, [chat(preview="hello", time="17:30")], 1000, posts)
+        self.assertEqual(posts, [])
+        self.assertEqual(st["baseline_v"], daemon.BASELINE_V)
+        self.assertEqual(st["baseline"]["Ada"]["time"], "17:30")
 
 
 if __name__ == "__main__":

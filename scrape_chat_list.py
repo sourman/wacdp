@@ -96,17 +96,24 @@ SCRAPE_JS = r"""
       const rest = body.slice(ci + 1).join(' ').trim();
       if (rest) preview = rest.slice(0, 280);
     }
-    const time = lines.length > 1 ? lines[1] : '';
+    // Rows without a photo start with an avatar initial line, so read the clock from its own cell.
+    const tsEl = el.querySelector('[data-testid="chat-list-timestamp"]');
+    const time = tsEl ? (tsEl.innerText || '').trim() : (lines.length > 1 ? lines[1] : '');
     // Attribution: chat-list preview is last activity, often Ahmed's outbound.
     const selfRow = !!(el.querySelector('[data-testid="message-yourself-row"], [data-testid="you-label"]'));
     const status = el.querySelector('[data-testid="last-msg-status"]');
+    // last-msg-status exists on inbound rows too; only a sent/pending marker inside it means ours.
+    // Collect every icon name (svg titles + data-icon), e.g. "wds-ic-delivered,ic-description".
     let statusTitle = '';
     if (status) {
-      const svgTitle = status.querySelector('svg title');
-      statusTitle = ((svgTitle && svgTitle.textContent) || status.getAttribute('title') || '').trim();
+      const names = [...status.querySelectorAll('svg title, [data-icon]')]
+        .map(x => (x.tagName.toLowerCase() === 'title' ? x.textContent : x.getAttribute('data-icon')) || '')
+        .map(x => x.trim()).filter(Boolean);
+      statusTitle = names.join(',');  // icon names only: the title attribute can hold message text
     }
-    const tickOut = /wds-ic-read|wds-ic-delivered|wds-ic-sent|msg-check|msg-dblcheck|status-dblcheck|status-check/i.test(statusTitle)
-      || !!(status && status.querySelector('[data-icon="msg-check"], [data-icon="msg-dblcheck"], [data-icon="status-check"], [data-icon="status-dblcheck"]'));
+    // Sent/delivered/read ticks plus the clock/pending marker shown while a message or file is still uploading.
+    const OUT_MARK = /wds-ic-(read|delivered|sent|pending|clock|time|schedule|msg-time|failed|error)|msg-(check|dblcheck|time)|status-(check|dblcheck|time)|(^|[,-])pending|ic-schedule|msg-pending/i;
+    const tickOut = OUT_MARK.test(statusTitle);
     const secondary = ((el.querySelector('[data-testid="cell-frame-secondary"]') || {}).innerText || preview || '');
     const is_reaction = /^\s*Reacted\b/i.test(secondary) || /^\s*Reacted\b/i.test(preview);
     const you_prefix = /^\s*You:\s*/i.test(preview) || /^\s*You:\s*/i.test(secondary);
